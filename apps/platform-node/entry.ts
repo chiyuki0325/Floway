@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { Agent, Pool, setGlobalDispatcher } from 'undici';
 import { WebSocketServer } from 'ws';
@@ -25,6 +27,7 @@ setGlobalDispatcher(new Agent({
 
 import { bootstrapNodePlatform } from './src/bootstrap.ts';
 import { applyMigrations } from './src/migrate.ts';
+import { createSpaApp, isApiPath, spaBuildExists } from './src/serve-spa.ts';
 import {
   app,
   initBackgroundSchedulerResolver,
@@ -54,6 +57,22 @@ const SCHEDULED_INTERVAL_MS = 60 * 60 * 1000;
 await applyMigrations(db);
 initRepo(new SqlRepo(db));
 
+// Serve the SPA dashboard for non-API paths when the build output exists.
+// The API/SPA path boundary is defined in ./src/serve-spa.ts and MUST stay
+// in sync with the same list in apps/web/vite.config.ts, wrangler.jsonc,
+// and docker/nginx.conf.
+// FLOWAY_SPA_DIR is resolved relative to CWD; the default resolves from the
+// entry file's location (apps/platform-node) to the repo-root SPA build output.
+const spaDir = getEnvOptional(
+  'FLOWAY_SPA_DIR',
+  resolve(import.meta.dirname, '../../apps/web/dist'),
+);
+const spaApp = spaBuildExists(spaDir) ? createSpaApp(spaDir) : null;
+
+if (spaApp) {
+  console.log(`Serving SPA from ${spaDir}`);
+}
+
 // Run the scheduled maintenance job once after a short startup delay and
 // then every hour. Without the startup run, a process that restarts more
 // often than the interval (crash loop, frequent deploys) would never run
@@ -69,10 +88,21 @@ const sweep = (): void => {
 setTimeout(sweep, STARTUP_DELAY_MS).unref();
 setInterval(sweep, SCHEDULED_INTERVAL_MS).unref();
 
+const wsServer = new WebSocketServer({ noServer: true });
+
 serve({
-  fetch: app.fetch,
+  fetch: (req: Request, ...args: unknown[]) => {
+    // When the SPA dist is available, divert non-API paths to the SPA
+    // app. API paths (and all requests when the SPA is absent) go to
+    // the gateway app. Extra args (env / execution context) are passed
+    // through so @hono/node-server's WebSocket upgrade mechanism works.
+    if (spaApp && !isApiPath(new URL(req.url).pathname)) {
+      return spaApp.fetch(req, ...args);
+    }
+    return app.fetch(req, ...args);
+  },
   port,
-  websocket: { server: new WebSocketServer({ noServer: true }) },
+  websocket: { server: wsServer },
 }, info => {
   console.log(`Floway listening on http://localhost:${info.port}`);
 });

@@ -165,8 +165,13 @@ root), `ADMIN_KEY` (admin secret), `PORT`, and optionally
 uppercased on read, defaults to `LOCAL` when unset). Default ports/paths in
 `apps/platform-node/entry.ts`. The Node entry runs `applyMigrations` against
 `packages/gateway/migrations/*.sql` at boot, then serves the same Hono app
-through `@hono/node-server`. Static-asset serving is Workers-only; the Node
-target serves no SPA.
+through `@hono/node-server`. When `apps/web/dist/index.html` exists (or
+`FLOWAY_SPA_DIR` is set to an alternative SPA build output), the Node
+target also serves the SPA dashboard for non-API paths; otherwise it
+behaves as a pure API gateway. The API/SPA path boundary is defined in
+`apps/platform-node/src/serve-spa.ts` and MUST stay in sync with the same
+list in `apps/web/vite.config.ts`, `wrangler.jsonc`, and
+`docker/nginx.conf`.
 
 Wrangler commands go through the local dependency with `pnpm wrangler` or
 package scripts. When deploying, do not pass `--dry-run`.
