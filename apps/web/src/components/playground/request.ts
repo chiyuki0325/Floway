@@ -1,15 +1,23 @@
 
 import type { ControlPlaneModel } from '../../api/types';
-import { ANTHROPIC_MESSAGES_FALLBACK_MAX_TOKENS } from '@floway-dev/protocols/anthropic-messages';
+import { ANTHROPIC_MESSAGES_FALLBACK_MAX_TOKENS, type AnthropicMessagesResult } from '@floway-dev/protocols/anthropic-messages';
 import { isEventStreamMediaType } from '@floway-dev/protocols/common';
+import type { OpenAIChatCompletionsResult } from '@floway-dev/protocols/openai-chat-completions';
+import type { OpenAIResponsesOutputItem } from '@floway-dev/protocols/openai-responses';
 
 export type PlaygroundApi = 'openaiResponses' | 'openaiChatCompletions' | 'anthropicMessages';
+
+export type PlaygroundAssistantOutput =
+  | { api: 'responses'; items: OpenAIResponsesOutputItem[] }
+  | { api: 'chatCompletions'; message: OpenAIChatCompletionsResult['choices'][number]['message'] }
+  | { api: 'messages'; content: AnthropicMessagesResult['content'] };
 
 export interface PlaygroundMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
   imageUrl?: string;
+  assistantOutput?: PlaygroundAssistantOutput;
 }
 
 export const playgroundApis: PlaygroundApi[] = ['openaiResponses', 'openaiChatCompletions', 'anthropicMessages'];
