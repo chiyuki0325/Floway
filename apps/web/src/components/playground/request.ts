@@ -1,15 +1,23 @@
 
 import type { ControlPlaneModel } from '../../api/types';
+import type { ChatCompletionsResult } from '@floway-dev/protocols/chat-completions';
 import { isEventStreamMediaType } from '@floway-dev/protocols/common';
-import { MESSAGES_FALLBACK_MAX_TOKENS } from '@floway-dev/protocols/messages';
+import { MESSAGES_FALLBACK_MAX_TOKENS, type MessagesResult } from '@floway-dev/protocols/messages';
+import type { ResponsesOutputItem } from '@floway-dev/protocols/responses';
 
 export type PlaygroundApi = 'responses' | 'chatCompletions' | 'messages';
+
+export type PlaygroundAssistantOutput =
+  | { api: 'responses'; items: ResponsesOutputItem[] }
+  | { api: 'chatCompletions'; message: ChatCompletionsResult['choices'][number]['message'] }
+  | { api: 'messages'; content: MessagesResult['content'] };
 
 export interface PlaygroundMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
   imageUrl?: string;
+  assistantOutput?: PlaygroundAssistantOutput;
 }
 
 export const playgroundApis: PlaygroundApi[] = ['responses', 'chatCompletions', 'messages'];
