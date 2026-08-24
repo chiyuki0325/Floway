@@ -8,6 +8,7 @@ import { withOpenAIResponsesServerToolShim } from './server-tool-shim.ts';
 import { imageGenerationServerTool } from './server-tools/image-generation.ts';
 import { webSearchServerTool } from './server-tools/web-search.ts';
 import { withPromptCacheKeyStripped } from './strip-prompt-cache-key.ts';
+import { withTraexImageGenerationStripped } from './strip-traex-image-generation.ts';
 import type { OpenAIResponsesInterceptor } from './types.ts';
 import { withVendorDeepSeekOpenAIResponsesNormalize } from './vendor-deepseek-normalize.ts';
 import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.ts';
@@ -26,6 +27,10 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 //     to every downstream interceptor + the provider terminal. Also
 //     responsible for inbound expansion of prior shim-encoded compaction
 //     items so the upstream sees the summarized history.
+//   - withTraexImageGenerationStripped: gated by
+//     `strip-traex-image-generation-tool`. Removes TraeX's invalid private
+//     image_gen.imagegen declaration before either a native provider dispatch
+//     or protocol translation can expose it to a model.
 //   - withOpenAIResponsesCollaborationShim: keeps one plaintext namespace around
 //     the complete server-tool loop and restores client identities on egress.
 //   - withOpenAIResponsesServerToolShim: wraps the multi-turn ReAct loop around
@@ -54,6 +59,7 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 //     body.
 export const openaiResponsesInterceptors: readonly OpenAIResponsesInterceptor[] = [
   withOpenAIResponsesCompactShim,
+  withTraexImageGenerationStripped,
   withOpenAIResponsesCollaborationShim,
   withOpenAIResponsesServerToolShim([
     webSearchServerTool,
