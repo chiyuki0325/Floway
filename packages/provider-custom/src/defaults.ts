@@ -22,5 +22,6 @@ export const CUSTOM_DEFAULT_FLAGS: FlagDefaults = {
   // does not pollute the upstream's prompt-cache key.
   'strip-billing-attribution': true,
   'strip-prompt-cache-key': false,
+  'strip-traex-image-generation-tool': true,
   'usage-exclusive-cached-tokens': false,
 };

@@ -33,6 +33,7 @@ export const OPTIONAL_FLAG_IDS = [
   'rewrite-system-to-developer',
   'strip-billing-attribution',
   'strip-prompt-cache-key',
+  'strip-traex-image-generation-tool',
   'usage-exclusive-cached-tokens',
 ] as const;
 
