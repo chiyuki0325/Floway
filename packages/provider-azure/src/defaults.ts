@@ -15,5 +15,6 @@ export const AZURE_DEFAULT_FLAGS: FlagDefaults = {
   'rewrite-system-to-developer': false,
   'strip-billing-attribution': true,
   'strip-prompt-cache-key': false,
+  'strip-traex-image-generation-tool': true,
   'usage-exclusive-cached-tokens': false,
 };

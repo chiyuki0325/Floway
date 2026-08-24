@@ -17,5 +17,6 @@ export const CODEX_DEFAULT_FLAGS: FlagDefaults = {
   'rewrite-system-to-developer': true,
   'strip-billing-attribution': true,
   'strip-prompt-cache-key': false,
+  'strip-traex-image-generation-tool': true,
   'usage-exclusive-cached-tokens': false,
 };

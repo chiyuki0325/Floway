@@ -6,6 +6,7 @@ import { withResponsesServerToolShim } from './server-tool-shim.ts';
 import { imageGenerationServerTool } from './server-tools/image-generation.ts';
 import { webSearchServerTool } from './server-tools/web-search.ts';
 import { withPromptCacheKeyStripped } from './strip-prompt-cache-key.ts';
+import { withTraexImageGenerationStripped } from './strip-traex-image-generation.ts';
 import type { ResponsesInterceptor } from './types.ts';
 import { withVendorDeepSeekResponsesNormalize } from './vendor-deepseek-normalize.ts';
 import { withVendorQwenResponsesNormalize } from './vendor-qwen-normalize.ts';
@@ -24,6 +25,10 @@ import { withVendorQwenResponsesNormalize } from './vendor-qwen-normalize.ts';
 //     to every downstream interceptor + the provider terminal. Also
 //     responsible for inbound expansion of prior shim-encoded compaction
 //     items so the upstream sees the summarized history.
+//   - withTraexImageGenerationStripped: gated by
+//     `strip-traex-image-generation-tool`. Removes TraeX's invalid private
+//     image_gen.imagegen declaration before either a native provider dispatch
+//     or protocol translation can expose it to a model.
 //   - withResponsesServerToolShim: wraps the multi-turn ReAct loop around
 //     the rest of the chain.
 //   - withReasoningDisabledOnForcedToolChoice: gated by
@@ -47,6 +52,7 @@ import { withVendorQwenResponsesNormalize } from './vendor-qwen-normalize.ts';
 //     body.
 export const responsesInterceptors: readonly ResponsesInterceptor[] = [
   withResponsesCompactShim,
+  withTraexImageGenerationStripped,
   withResponsesServerToolShim([
     webSearchServerTool,
     imageGenerationServerTool,

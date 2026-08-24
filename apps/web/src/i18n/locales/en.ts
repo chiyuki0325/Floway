@@ -678,6 +678,11 @@ const en = {
               description:
                   'The OpenAI API supports `prompt_cache_key` for identifying reusable prompt prefixes, but some upstreams do not support this field and may reject the request (for example, DeepSeek models provided through Azure).\nEnable this option to remove the top-level `prompt_cache_key` field before sending the request upstream.',
             },
+            'strip-traex-image-generation-tool': {
+              label: 'Remove TraeX Private Image Tool',
+              description:
+                  'TraeX may declare ChatGPT’s private `image_gen.imagegen` tool with a client-defined schema. GPT models reserve that tool name and reject schemas that do not match their built-in definition.\nEnable this option to remove only that private declaration before forwarding the request. The public Responses API image generation tool (`image_generation`) is preserved.',
+            },
             'usage-exclusive-cached-tokens': {
               label: 'Cached Tokens Reported Outside Input Tokens',
               description:

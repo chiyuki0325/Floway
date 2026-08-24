@@ -26,6 +26,7 @@ const flagGroupById = {
   'usage-exclusive-cached-tokens': 'apiCompatibility',
   'strip-billing-attribution': 'sanitization',
   'strip-prompt-cache-key': 'sanitization',
+  'strip-traex-image-generation-tool': 'sanitization',
 } as const satisfies Record<FlagId, FlagGroupId>;
 
 export function FeatureFlagsEditor({

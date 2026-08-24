@@ -648,6 +648,11 @@ const zhHansCN = {
               description:
                   'OpenAI API 支持通过 `prompt_cache_key` 标识可复用的提示词前缀，但部分上游并不支持，可能导致拒绝请求（如 Azure 提供的 DeepSeek 模型）。\n开启此开关，以在请求上游前移除顶层的 `prompt_cache_key` 字段。',
             },
+            'strip-traex-image-generation-tool': {
+              label: '移除 TraeX 私有图像工具',
+              description:
+                  'TraeX 可能使用客户端自定义的 schema 声明 ChatGPT 私有工具 `image_gen.imagegen`。GPT 模型保留了这个工具名，并会拒绝与其内置定义不匹配的 schema。\n开启此开关后，Floway 会在转发请求前仅移除该私有声明，并保留 Responses API 的公开图像生成工具（`image_generation`）。',
+            },
             'usage-exclusive-cached-tokens': {
               label: '缓存 Token 不计入输入 Token',
               description:
