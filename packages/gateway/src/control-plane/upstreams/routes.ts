@@ -251,6 +251,7 @@ export const createUpstream = async (c: CtxWithJson<typeof createUpstreamBody>) 
     proxyFallbackList,
     modelPrefix,
     hue: body.hue,
+    maxConcurrentRequests: body.max_concurrent_requests ?? null,
     config: body.config,
     state: stateFromBody,
     // Operator edits never carry the catalog cache; the repo leaves the
@@ -325,6 +326,7 @@ export const updateUpstream = async (c: CtxWithJson<typeof updateUpstreamBody, '
     next = { ...next, modelPrefix: result.value };
   }
   if (body.hue !== undefined) next = { ...next, hue: body.hue };
+  if (body.max_concurrent_requests !== undefined) next = { ...next, maxConcurrentRequests: body.max_concurrent_requests };
   if (body.config !== undefined) {
     const config = mergeConfigPatch(existing.kind, existing.config, body.config);
     if (!config.ok) return c.json({ error: config.error }, 400);

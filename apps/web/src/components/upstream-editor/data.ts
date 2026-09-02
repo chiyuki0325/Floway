@@ -67,6 +67,7 @@ export interface UpstreamEditorValues {
   name: string;
   enabled: boolean;
   hue: UpstreamRecord['hue'];
+  maxConcurrentRequests: number | null;
   proxyFallbackList: UpstreamRecord['proxy_fallback_list'];
   modelPrefix: UpstreamRecord['model_prefix'];
   disabledPublicModelIds: string[];
@@ -229,6 +230,7 @@ export const valuesFromRecord = (record: UpstreamRecord): UpstreamEditorValues =
     name: record.name,
     enabled: record.enabled,
     hue: record.hue,
+    maxConcurrentRequests: record.max_concurrent_requests,
     proxyFallbackList: structuredClone(record.proxy_fallback_list).map(entry => withRegisteredKey('colos', entry)),
     modelPrefix: structuredClone(record.model_prefix),
     disabledPublicModelIds: [...record.disabled_public_model_ids],
@@ -280,6 +282,7 @@ export const previewRecord = (record: UpstreamRecord, values: UpstreamEditorValu
     name: values.name.trim(),
     enabled: values.enabled,
     hue: values.hue,
+    max_concurrent_requests: values.maxConcurrentRequests,
     config: configFromValues(record, values, { preserveStoredSecret: true }),
     state: values.state,
     proxy_fallback_list: values.proxyFallbackList,
@@ -297,6 +300,7 @@ export const createBody = (record: UpstreamRecord, values: UpstreamEditorValues,
     name: values.name.trim(),
     enabled: values.enabled,
     hue: values.hue,
+    max_concurrent_requests: values.maxConcurrentRequests,
     flag_overrides: values.flagOverrides,
     disabled_public_model_ids: values.disabledPublicModelIds,
     proxy_fallback_list: values.proxyFallbackList,
@@ -313,6 +317,7 @@ export const updateBody = (record: UpstreamRecord, values: UpstreamEditorValues)
     name: values.name.trim(),
     enabled: values.enabled,
     hue: values.hue,
+    max_concurrent_requests: values.maxConcurrentRequests,
     flag_overrides: values.flagOverrides,
     disabled_public_model_ids: values.disabledPublicModelIds,
     proxy_fallback_list: values.proxyFallbackList,

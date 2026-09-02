@@ -9,13 +9,15 @@ import { createAlias, deleteAlias, listAliases, updateAlias } from './model-alia
 import { controlPlaneModels } from './models/routes.ts';
 import { performanceOverview } from './performance/routes.ts';
 import { createProxy, deleteProxy, listAllBackoffs, listProxies, listProxyBackoffs, resetProxyBackoffs, testProxy, updateProxy } from './proxies/routes.ts';
-import { authLoginBody, changeOwnPasswordBody, claudeCodeOAuthAuthorizeUrlBody, claudeCodeOAuthExchangeBody, claudeCodeOAuthRefreshBody, claudeCodeProbeBody, claudeCodeSetupTokenAuthorizeUrlBody, claudeCodeSetupTokenExchangeBody, codexOAuthAuthorizeUrlBody, codexOAuthExchangeBody, codexOAuthRefreshBody, copilotOAuthDeviceLoginPollBody, copilotOAuthDeviceLoginStartBody, copilotQuotaBody, createAliasBody, createKeyBody, createProxyBody, createUpstreamBody, createUserBody, exportQuery, importBody, listModelsBody, modelsQuery, ollamaUsageBody, performanceQuery, resetBackoffBody, rotateKeyBody, webSearchConfigSchema, webSearchUsageQuery, testProxyBody, tokenUsageOverviewQuery, tokenUsageQuery, updateAliasBody, updateKeyBody, updateProxyBody, updateUpstreamBody, updateUserBody } from './schemas.ts';
+import { authLoginBody, changeOwnPasswordBody, claudeCodeOAuthAuthorizeUrlBody, claudeCodeOAuthExchangeBody, claudeCodeOAuthRefreshBody, claudeCodeProbeBody, claudeCodeSetupTokenAuthorizeUrlBody, claudeCodeSetupTokenExchangeBody, codexOAuthAuthorizeUrlBody, codexOAuthExchangeBody, codexOAuthRefreshBody, copilotOAuthDeviceLoginPollBody, copilotOAuthDeviceLoginStartBody, copilotQuotaBody, createAliasBody, createKeyBody, createProxyBody, createUpstreamBody, createUserBody, exportQuery, importBody, listModelsBody, modelsQuery, ollamaUsageBody, performanceQuery, resetBackoffBody, rotateKeyBody, webSearchConfigSchema, webSearchUsageQuery, testProxyBody, tokenUsageOverviewQuery, tokenUsageQuery, upstreamConcurrencyQuery, updateAliasBody, updateKeyBody, updateProxyBody, updateUpstreamBody, updateUserBody } from './schemas.ts';
 import { getWebSearchConfigRoute, putWebSearchConfigRoute, testWebSearchConfigRoute } from './search-config/routes.ts';
 import { webSearchUsage } from './search-usage/routes.ts';
+import { upstreamConcurrencyOverview } from './token-usage/concurrency.ts';
 import { tokenUsageOverview } from './token-usage/overview.ts';
 import { tokenUsage } from './token-usage/routes.ts';
 import { claudeCodeOAuthAuthorizeUrl, claudeCodeOAuthExchange, claudeCodeOAuthRefresh, claudeCodeProbe, claudeCodeSetupTokenAuthorizeUrl, claudeCodeSetupTokenExchange } from './upstreams/claude-code.ts';
 import { codexOAuthAuthorizeUrl, codexOAuthExchange, codexOAuthRefresh } from './upstreams/codex.ts';
+import { upstreamConcurrencyStatus } from './upstreams/concurrency.ts';
 import { copilotOAuthDeviceLoginPoll, copilotOAuthDeviceLoginStart, copilotQuota } from './upstreams/copilot.ts';
 import { listModels } from './upstreams/models.ts';
 import { ollamaUsage } from './upstreams/ollama.ts';
@@ -53,6 +55,7 @@ export const controlPlaneRoutes = new Hono<{ Variables: AuthVars }>()
   .delete('/api/keys/:id', deleteKey)
   .get('/api/token-usage', zValidator('query', tokenUsageQuery), tokenUsage)
   .get('/api/token-usage/overview', zValidator('query', tokenUsageOverviewQuery), tokenUsageOverview)
+  .get('/api/token-usage/concurrency-overview', zValidator('query', upstreamConcurrencyQuery), upstreamConcurrencyOverview)
   .get('/api/search-usage', zValidator('query', webSearchUsageQuery), webSearchUsage)
   .get('/api/performance/overview', zValidator('query', performanceQuery), performanceOverview)
   .get('/api/models', zValidator('query', modelsQuery), controlPlaneModels)
@@ -94,6 +97,7 @@ export const controlPlaneRoutes = new Hono<{ Variables: AuthVars }>()
     .post('/upstreams/ollama/usage', zValidator('json', ollamaUsageBody), ollamaUsage)
     .post('/upstreams/list-models', zValidator('json', listModelsBody), listModels)
     .post('/upstreams', zValidator('json', createUpstreamBody), createUpstream)
+    .get('/upstreams/concurrency', async c => c.json(await upstreamConcurrencyStatus()))
     .get('/upstreams/:id', getUpstream)
     .patch('/upstreams/:id', zValidator('json', updateUpstreamBody), updateUpstream)
     .delete('/upstreams/:id', deleteUpstream)

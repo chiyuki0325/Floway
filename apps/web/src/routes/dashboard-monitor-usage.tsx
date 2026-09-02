@@ -24,6 +24,7 @@ import { ResourceListActions } from '../components/ui/resource-list';
 import { usePollWhileVisible } from '../components/ui/use-poll-while-visible';
 import { useRefreshOnChange } from '../components/ui/use-refresh';
 import { UsageChartSection } from '../components/usage/chart-section';
+import { ConcurrencyPanel } from '../components/usage/concurrency-panel';
 import { loadUsagePageData } from '../components/usage/data';
 import { formatMetricValue } from '../components/usage/format';
 import { buildSearchChart, buildTokenChart, dashboardBuckets, summarizeUsage } from '../components/usage/plot';
@@ -38,7 +39,8 @@ import { tokenUsageUnattributedUserId, usageUpstreamDimensionValue, usageUpstrea
 
 const { Button, Tooltip } = fluentComponents;
 
-type LoaderData = Awaited<ReturnType<typeof loadUsagePageData>> & {
+type LoaderData = Omit<Awaited<ReturnType<typeof loadUsagePageData>>, 'concurrency'> & {
+  concurrency?: Awaited<ReturnType<typeof loadUsagePageData>>['concurrency'];
   currentUserId: string;
   isAdmin: boolean;
   loadedAt: number;
@@ -84,6 +86,7 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
   const [usage, setUsage] = useState(loaderData.usage);
   const [search, setSearch] = useState(loaderData.search);
   const [upstreams, setUpstreams] = useState(loaderData.upstreams);
+  const [concurrency, setConcurrency] = useState(loaderData.concurrency);
   const [metric, setMetric] = useState<UsageMetric>(initialState.metric);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set(initialState.hidden));
   const [hiddenSearch, setHiddenSearch] = useState<Set<string>>(() => new Set(initialState.hiddenSearch));
@@ -106,6 +109,7 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
     setUsage(next.usage);
     setSearch(next.search);
     setUpstreams(next.upstreams);
+    setConcurrency(next.concurrency);
     setError(next.error);
     return true;
   }, [loaderData.isAdmin, query]);
@@ -278,6 +282,8 @@ export default function DashboardMonitorUsage({ loaderData }: Route.ComponentPro
         <SummaryMetrics metric={metric} onMetricChange={setMetric} summary={summary} />
       </>}
     </Panel>
+
+    {loaderData.isAdmin && <ConcurrencyPanel records={concurrency?.records ?? null} />}
 
     {showSearch && <Panel className="min-w-0">
       {searchChart === null ? <EmptyStateLine>{t('dashboard.pages.unavailable')}</EmptyStateLine> : (

@@ -36,6 +36,7 @@ import type {
   PerformanceSample,
   PerformanceBucketRow,
   PerformanceMetric,
+  UpstreamConcurrencyRepo,
   PerformanceOverviewQueryOptions,
   PerformanceOverviewResult,
   ProxyBackoffRepo,
@@ -63,6 +64,7 @@ import type {
   User,
   UsersRepo,
 } from '../../src/repo/types.ts';
+import { MemoryUpstreamConcurrencyRepo } from '../../src/repo/upstream-concurrency-memory.ts';
 import { serializeStoredConfig, serializeStoredState } from '../../src/repo/upstream-json.ts';
 import { usageMetricRows } from '../../src/repo/usage-metrics.ts';
 import { bucketForTtftMs, bucketForTpotUs } from '../../src/shared/performance-histogram.ts';
@@ -1466,6 +1468,7 @@ export class InMemoryRepo implements Repo {
   usage: UsageRepo;
   webSearchUsage: WebSearchUsageRepo;
   performance: PerformanceRepo;
+  upstreamConcurrency: UpstreamConcurrencyRepo;
   webSearchConfig: WebSearchConfigRepo;
   upstreams: UpstreamRepo;
   proxies: ProxyRepo;
@@ -1487,6 +1490,7 @@ export class InMemoryRepo implements Repo {
     this.usage = new MemoryUsageRepo(this.apiKeys);
     this.webSearchUsage = new MemoryWebSearchUsageRepo();
     this.performance = new MemoryPerformanceRepo(this.apiKeys);
+    this.upstreamConcurrency = new MemoryUpstreamConcurrencyRepo();
     this.webSearchConfig = new MemoryWebSearchConfigRepo();
     this.upstreams = new MemoryUpstreamRepo();
     this.proxies = new MemoryProxyRepo(this.upstreams);

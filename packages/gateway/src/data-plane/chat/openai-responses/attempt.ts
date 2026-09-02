@@ -5,9 +5,11 @@ import type { OpenAIResponsesAttemptResult, OpenAIResponsesInvocation } from './
 import { normalizeAssistantInputText } from './items/normalize-assistant-content.ts';
 import { syntheticEventsFromCompaction } from './items/output.ts';
 import { billableUsageFromOpenAIResponsesEvent, billableUsageFromOpenAIResponsesResult } from './usage.ts';
+import { getRepo } from '../../../repo/index.ts';
 import { telemetryModelIdentity, upstreamPerformanceContext } from '../../shared/telemetry/attribution.ts';
 import { tokenUsageFromBillableUsage } from '../../shared/telemetry/usage.ts';
 import { buildUpstreamCallOptions } from '../../shared/upstream-call-options.ts';
+import { acquireUpstreamConcurrency } from '../../shared/upstream-concurrency.ts';
 import { anthropicMessagesAttempt } from '../anthropic-messages/attempt.ts';
 import { openaiChatCompletionsAttempt } from '../openai-chat-completions/attempt.ts';
 import { applyRulesToUpstreamOpenAIResponses } from '../shared/alias-rules.ts';
@@ -155,14 +157,52 @@ const dispatchOpenAIResponses = async (
       const { model: _model, ...rest } = invocation.payload;
       body = rest;
     }
-    const providerResult = await candidate.provider.instance.callOpenAIResponses(
-      providerModelOf(candidate),
-      body,
-      invocation.action,
-      ctx.abortSignal,
-      buildUpstreamCallOptions(candidate, ctx, invocation.headers),
-    );
-    return await providerOpenAIResponsesResultToExecuteResult(providerResult, candidate, targetApi, ctx);
+    const upstream = await getRepo().upstreams.getById(candidate.provider.upstreamId);
+    const lease = upstream?.maxConcurrentRequests === undefined || upstream.maxConcurrentRequests === null
+      ? null
+      : await acquireUpstreamConcurrency({
+          upstreamId: candidate.provider.upstreamId,
+          maxConcurrentRequests: upstream.maxConcurrentRequests,
+          signal: ctx.abortSignal,
+          onObservation: (active, queued) => {
+            ctx.backgroundScheduler(getRepo().upstreamConcurrency.record({
+              upstreamId: candidate.provider.upstreamId,
+              limit: upstream.maxConcurrentRequests!,
+              active,
+              queued,
+              waitMs: 0,
+              at: Date.now(),
+            }).catch(() => undefined));
+          },
+        });
+    try {
+      const providerResult = await candidate.provider.instance.callOpenAIResponses(
+        providerModelOf(candidate),
+        body,
+        invocation.action,
+        ctx.abortSignal,
+        buildUpstreamCallOptions(candidate, ctx, invocation.headers),
+      );
+      const result = await providerOpenAIResponsesResultToExecuteResult(providerResult, candidate, targetApi, ctx);
+      if (lease === null) return result;
+      if (result.type !== 'events') {
+        lease.release();
+        return result;
+      }
+      return {
+        ...result,
+        events: (async function* () {
+          try {
+            yield* result.events;
+          } finally {
+            lease.release();
+          }
+        })(),
+      };
+    } catch (error) {
+      lease?.release();
+      throw error;
+    }
   }
   case 'anthropicMessages':
     if (invocation.action === 'compact') {

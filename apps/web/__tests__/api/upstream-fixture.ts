@@ -21,6 +21,7 @@ const commonFields = {
   proxy_fallback_list: [],
   model_prefix: null,
   hue: 210,
+  max_concurrent_requests: null,
   modelsCache: { fetchedAt: null, lastError: null, modelCount: null },
 } satisfies Omit<UpstreamRecord, 'id' | 'kind' | 'config' | 'state'>;
 
