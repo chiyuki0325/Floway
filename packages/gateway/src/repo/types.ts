@@ -232,6 +232,24 @@ export interface PerformanceOverviewQueryOptions {
   bucketForHour: (hour: string) => string;
 }
 
+export interface UpstreamConcurrencyObservation {
+  hour: string;
+  upstreamId: string;
+  limit: number;
+  samples: number;
+  activeSum: number;
+  activeMax: number;
+  queuedSum: number;
+  queuedMax: number;
+  waitMsSum: number;
+}
+
+export interface UpstreamConcurrencyRepo {
+  record(observation: { upstreamId: string; limit: number; active: number; queued: number; waitMs: number; at: number }): Promise<void>;
+  query(opts: { start: string; end: string; upstreamIds?: readonly string[] }): Promise<UpstreamConcurrencyObservation[]>;
+  deleteBefore(at: number): Promise<void>;
+}
+
 export interface PerformanceOverviewResult {
   series: PerformanceDisplayRecord[];
   axes: Record<PerformanceGroupBy, PerformanceDisplayRecord[]>;
@@ -568,6 +586,7 @@ export interface Repo {
   usage: UsageRepo;
   webSearchUsage: WebSearchUsageRepo;
   performance: PerformanceRepo;
+  upstreamConcurrency: UpstreamConcurrencyRepo;
   webSearchConfig: WebSearchConfigRepo;
   upstreams: UpstreamRepo;
   proxies: ProxyRepo;

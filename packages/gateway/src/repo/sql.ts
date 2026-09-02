@@ -32,6 +32,7 @@ import type {
   PerformanceOverviewResult,
   PerformanceRepo,
   PerformanceSample,
+  UpstreamConcurrencyRepo,
   PerformanceTelemetryRecord,
   ProxyBackoffRepo,
   ProxyRecord,
@@ -65,6 +66,7 @@ import {
   decodeUpstreamState,
   encodeUpstreamModelsCache,
 } from './upstream-codecs.ts';
+import { SqlUpstreamConcurrencyRepo } from './upstream-concurrency-sql.ts';
 import { serializeStoredConfig, serializeStoredState } from './upstream-json.ts';
 import { parseUpstreamHue, parseUpstreamKind } from './upstream-parse.ts';
 import { usageMetricRows } from './usage-metrics.ts';
@@ -882,7 +884,7 @@ const MODELS_CACHE_EPOCH_SQL = `CASE
   ELSE 0
 END`;
 
-const UPSTREAM_COLUMNS = 'id, provider, name, enabled, sort_order, created_at, updated_at, config_version, config_json, state_json, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue';
+const UPSTREAM_COLUMNS = 'id, provider, name, enabled, sort_order, created_at, updated_at, config_version, config_json, state_json, models_cache_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue, max_concurrent_requests';
 
 class SqlUpstreamRepo implements UpstreamRepo {
   constructor(private db: SqlDatabase) {}
@@ -904,7 +906,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
 
   async insertForModels(upstream: UpstreamRecord): Promise<StoredUpstreamRecord | null> {
     const row = await this.db
-      .prepare(`INSERT INTO upstreams (id, provider, name, enabled, sort_order, created_at, updated_at, config_version, config_json, state_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING
+      .prepare(`INSERT INTO upstreams (id, provider, name, enabled, sort_order, created_at, updated_at, config_version, config_json, state_json, flag_overrides, disabled_public_model_ids, proxy_fallback_list_json, model_prefix_json, hue, max_concurrent_requests) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING
         RETURNING ${UPSTREAM_COLUMNS}`)
       .bind(
         upstream.id,
@@ -921,6 +923,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
         JSON.stringify(normalizeProxyFallbackList(upstream.proxyFallbackList)),
         upstream.modelPrefix === null ? null : JSON.stringify(upstream.modelPrefix),
         upstream.hue,
+        upstream.maxConcurrentRequests ?? null,
       )
       .first<UpstreamRow>();
     return row === null ? null : toUpstreamRecord(row);
@@ -971,7 +974,8 @@ class SqlUpstreamRepo implements UpstreamRepo {
            disabled_public_model_ids = ?,
            proxy_fallback_list_json = ?,
            model_prefix_json = ?,
-           hue = ?${modelsCacheUpdate}
+           hue = ?,
+           max_concurrent_requests = ?${modelsCacheUpdate}
          WHERE id = ?
            AND provider = ?
            AND name = ?
@@ -986,6 +990,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
            AND proxy_fallback_list_json = ?
            AND model_prefix_json IS ?
            AND hue = ?
+           AND max_concurrent_requests IS ?
          RETURNING ${UPSTREAM_COLUMNS}`,
       )
       .bind(
@@ -1003,6 +1008,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
         JSON.stringify(normalizeProxyFallbackList(upstream.proxyFallbackList)),
         upstream.modelPrefix === null ? null : JSON.stringify(upstream.modelPrefix),
         upstream.hue,
+        upstream.maxConcurrentRequests ?? null,
         upstream.id,
         previous.kind,
         previous.name,
@@ -1018,6 +1024,7 @@ class SqlUpstreamRepo implements UpstreamRepo {
         storedRow.proxy_fallback_list_json,
         storedRow.model_prefix_json,
         previous.hue,
+        previous.maxConcurrentRequests ?? null,
       )
       .first<UpstreamRow>();
     return row === null ? null : toUpstreamRecord(row);
@@ -1143,6 +1150,7 @@ interface UpstreamRow {
   proxy_fallback_list_json: string;
   model_prefix_json: string | null;
   hue: number;
+  max_concurrent_requests: number | null;
 }
 
 const toUpstreamRecord = (row: UpstreamRow): StoredUpstreamRecord => {
@@ -1169,6 +1177,7 @@ const toUpstreamRecord = (row: UpstreamRow): StoredUpstreamRecord => {
     proxyFallbackList: parseProxyFallbackList(row.id, row.proxy_fallback_list_json),
     modelPrefix: parseModelPrefix(row.id, row.model_prefix_json),
     hue: parseUpstreamHue(row.id, row.hue),
+    maxConcurrentRequests: row.max_concurrent_requests,
   };
 };
 
@@ -1690,6 +1699,7 @@ export class SqlRepo implements Repo {
   usage: UsageRepo;
   webSearchUsage: WebSearchUsageRepo;
   performance: PerformanceRepo;
+  upstreamConcurrency: UpstreamConcurrencyRepo;
   webSearchConfig: WebSearchConfigRepo;
   upstreams: UpstreamRepo;
   proxies: ProxyRepo;
@@ -1709,6 +1719,7 @@ export class SqlRepo implements Repo {
     this.usage = new SqlUsageRepo(db);
     this.webSearchUsage = new SqlWebSearchUsageRepo(db);
     this.performance = new SqlPerformanceRepo(db);
+    this.upstreamConcurrency = new SqlUpstreamConcurrencyRepo(db);
     this.webSearchConfig = new SqlWebSearchConfigRepo(db);
     this.upstreams = new SqlUpstreamRepo(db);
     this.proxies = new SqlProxyRepo(db);

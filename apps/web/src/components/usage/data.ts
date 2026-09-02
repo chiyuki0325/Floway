@@ -10,6 +10,7 @@ import type {
 } from './types';
 import { api, callApi } from '../../api/client';
 import { dashboardRangeQuery } from '../charts/dashboard-time';
+import type { ConcurrencyOverviewResponse } from '@floway-dev/gateway/control-plane/token-usage/concurrency';
 import type {
   SearchUsageByKeyResponse,
   SearchUsageByUserResponse,
@@ -76,10 +77,13 @@ export const loadUsagePageData = async (
   const searchQuery = searchView === 'all-by-user'
     ? { start, end, include_user_metadata: '1', view: searchView }
     : { start, end, include_key_metadata: '1', view: searchView };
-  const [usageResult, searchResult, upstreamsResult] = await Promise.all([
+  const [usageResult, searchResult, upstreamsResult, concurrencyResult] = await Promise.all([
     callApi(() => api.api['token-usage'].overview.$get({ query: overviewQuery }, { init: { signal } })),
     callApi(() => api.api['search-usage'].$get({ query: searchQuery }, { init: { signal } })),
     callApi(() => api.api['upstream-options'].$get({}, { init: { signal } })),
+    isAdmin
+      ? callApi(() => api.api['token-usage']['concurrency-overview'].$get({ query: { start, end, filter_upstream: filters.upstream } }, { init: { signal } }))
+      : Promise.resolve(null),
   ]);
   const searchData = searchResult.error ? null : searchResult.data;
   if (searchData !== null && (Array.isArray(searchData) || searchData.view !== searchView)) {
@@ -89,6 +93,7 @@ export const loadUsagePageData = async (
     usage: usageResult.data ? usageOverviewForDisplay(usageResult.data) : null,
     search: searchData ? searchUsageForDisplay(searchData) : null,
     upstreams: upstreamsResult.data?.map(({ id, name, hue }) => ({ id, name, hue } satisfies UsageUpstream)) ?? [],
+    concurrency: concurrencyResult && 'data' in concurrencyResult ? concurrencyResult.data as ConcurrencyOverviewResponse : null,
     error: usageResult.error ?? searchResult.error ?? upstreamsResult.error ?? null,
   };
 };
