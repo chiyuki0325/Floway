@@ -347,6 +347,7 @@ const upstreamBaseFields = {
   proxy_fallback_list: proxyFallbackListSchema.optional(),
   model_prefix: modelPrefixSchema.optional(),
   hue: upstreamHueSchema,
+  max_concurrent_requests: z.number().int().positive().nullable().optional(),
 };
 
 // Create accepts a discriminated union on `kind` for per-provider config
@@ -386,6 +387,7 @@ export const updateUpstreamBody = z.object({
   proxy_fallback_list: proxyFallbackListSchema.optional(),
   model_prefix: modelPrefixSchema.optional(),
   hue: upstreamHueSchema.optional(),
+  max_concurrent_requests: z.number().int().positive().nullable().optional(),
   // Patches only carry field diffs, not per-kind shape validation — the
   // handler dispatches on the existing row's kind and enforces the shape
   // there (Copilot/Codex/Claude Code reject a config patch outright, since
@@ -790,6 +792,12 @@ export const tokenUsageOverviewQuery = z.object({
   // the synthetic user bucket.
   filter_user_id: filterValues(filterTokenUsageOverviewUserId),
   group_by: z.enum(['keyId', 'userId', 'model', 'upstream']).optional(),
+});
+
+export const upstreamConcurrencyQuery = z.object({
+  start: z.string().optional(),
+  end: z.string().optional(),
+  filter_upstream: filterValues(z.string()),
 });
 
 export const performanceQuery = z.object({

@@ -95,6 +95,7 @@ export interface UpstreamRecord {
   // upstream carries its own; the dashboard derives the whole badge from it.
   // Wire validation lives in the control-plane Zod schema.
   hue: number;
+  maxConcurrentRequests?: number | null;
 }
 
 // Public identity + capability surface shared by `InternalModel` (the merged,

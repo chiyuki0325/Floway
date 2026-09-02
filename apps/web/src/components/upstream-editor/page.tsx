@@ -67,6 +67,7 @@ export function UpstreamEditorPage({ data }: { data: UpstreamEditorLoaderData })
     name: z.string().trim().min(1, 'dashboard.upstreamEditor.validation.name'),
     enabled: z.boolean(),
     hue: z.number(),
+    maxConcurrentRequests: z.number().int().positive().nullable(),
     proxyFallbackList: z.any(),
     modelPrefix: z.any(),
     disabledPublicModelIds: z.array(z.string()),

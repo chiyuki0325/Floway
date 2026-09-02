@@ -539,11 +539,16 @@ const en = {
         },
         sections: {
           connection: 'Connection and authentication',
+          concurrency: 'Concurrency limit',
           hue: 'Badge color',
           proxy: 'Proxy routing',
           apiPaths: 'API paths',
           prefix: 'Model name prefix',
           disabledModels: 'Disabled models',
+        },
+        concurrency: {
+          label: 'Maximum concurrent Responses requests',
+          description: 'Leave blank for unlimited. A streaming request counts until it fully ends or is aborted.',
         },
         hue: {
           description: 'Choose how this upstream is distinguished across the console.',
@@ -1013,6 +1018,15 @@ const en = {
           thirtyDays: '30 Days',
         },
         actions: { refresh: 'Refresh usage' },
+        concurrency: {
+          title: 'Upstream concurrency and queue history',
+          empty: 'No queue observations in this range',
+          hour: 'Hour',
+          upstream: 'Upstream',
+          limit: 'Limit',
+          active: 'Active average / max',
+          queued: 'Queued average / max',
+        },
         charts: {
           search: 'Search Usage',
           searchWithProvider: 'Search Usage ({{provider}})',

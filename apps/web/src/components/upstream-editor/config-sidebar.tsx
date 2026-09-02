@@ -81,6 +81,29 @@ export function UpstreamConfigSidebar({
           <UpstreamHueEditor kind={record.kind} />
         </EditorSection>
         <EditorSection
+          title={t('dashboard.upstreamEditor.sections.concurrency')}
+          description={t('dashboard.upstreamEditor.concurrency.description')}
+        >
+          <Controller
+            control={control}
+            name="maxConcurrentRequests"
+            render={({ field }) => (
+              <Field label={t('dashboard.upstreamEditor.concurrency.label')}>
+                <Input
+                  aria-label={t('dashboard.upstreamEditor.concurrency.label')}
+                  min={1}
+                  name={field.name}
+                  onBlur={field.onBlur}
+                  onChange={(_, data) => field.onChange(data.value === '' ? null : Number(data.value))}
+                  ref={field.ref}
+                  type="number"
+                  value={field.value === null ? '' : String(field.value)}
+                />
+              </Field>
+            )}
+          />
+        </EditorSection>
+        <EditorSection
           error={errors.config?.message ? t(errors.config.message) : undefined}
           title={t('dashboard.upstreamEditor.sections.connection')}
         >

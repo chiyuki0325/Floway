@@ -510,11 +510,16 @@ const zhHansCN = {
         },
         sections: {
           connection: '连接与认证',
+          concurrency: '并发限制',
           hue: '徽章颜色',
           proxy: '代理路由',
           apiPaths: 'API 路径',
           prefix: '模型名称前缀',
           disabledModels: '禁用的模型',
+        },
+        concurrency: {
+          label: 'Responses 请求最大并发数',
+          description: '留空表示不限流。流式请求会一直占用名额，直到完整结束或中止。',
         },
         hue: {
           description: '选择在控制台中区分此上游的颜色。',
@@ -965,6 +970,15 @@ const zhHansCN = {
           thirtyDays: '30 天',
         },
         actions: { refresh: '刷新使用量' },
+        concurrency: {
+          title: '上游并发与排队历史',
+          empty: '此时间范围内没有排队观测记录',
+          hour: '时间',
+          upstream: '上游',
+          limit: '并发上限',
+          active: '活跃平均 / 最大',
+          queued: '排队平均 / 最大',
+        },
         charts: {
           search: '搜索使用量',
           searchWithProvider: '搜索使用量（{{provider}}）',

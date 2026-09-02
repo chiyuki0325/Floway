@@ -164,6 +164,7 @@ const upstreamWireSchema = parsedBy((value): UpstreamRecord => {
     proxyFallbackList: parseValue(proxyFallbackListSchema, wire.proxy_fallback_list),
     modelPrefix: parseValue(parsedBy(normalizeModelPrefix).optional().default(null), wire.model_prefix),
     hue: parseValue(parsedBy(normalizeUpstreamHue), wire.hue),
+    maxConcurrentRequests: parseValue(z.union([positiveIntegerSchema('max_concurrent_requests'), z.null()]).optional().default(null), wire.max_concurrent_requests),
     config: wire.config,
     state: normalizeUpstreamState(kind, wire.state),
     modelsCache: null,
