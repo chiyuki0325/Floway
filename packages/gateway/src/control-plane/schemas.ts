@@ -84,7 +84,7 @@ const pricingMetricShape = {
 // deduplicate via transform. Input additionally requires 'text' to be present
 // (a multimodal model must accept text); output has no such constraint (an
 // image-generation model may emit only images).
-const modalityArraySchema = z.array(z.enum(['text', 'image']))
+const modalityArraySchema = z.array(z.enum(['text', 'image', 'audio']))
   .min(1)
   .transform(arr => Array.from(new Set(arr)));
 

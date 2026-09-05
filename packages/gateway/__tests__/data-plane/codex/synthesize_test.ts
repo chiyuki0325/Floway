@@ -252,6 +252,18 @@ describe('synthesizeCatalogEntry', () => {
       expect(entry.default_reasoning_level).toBe('high');
     });
 
+    test('preserves an absent registry reasoning default', () => {
+      const entry = synthesizeCatalogEntry({
+        ...base,
+        chat: { reasoning: { effort: { supported: ['low', 'high'] } } },
+      }, bundledBase);
+      expect(entry.supported_reasoning_levels).toEqual([
+        { effort: 'low', description: '' },
+        { effort: 'high', description: '' },
+      ]);
+      expect(entry.default_reasoning_level).toBeUndefined();
+    });
+
     test('preserves an existing Ultra preset without duplication', () => {
       const entry = synthesizeCatalogEntry(base, {
         ...bundledBase,

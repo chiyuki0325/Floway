@@ -174,12 +174,12 @@ export const synthesizeCatalogEntry = (
   // a model advertising Max alone does not establish either client behavior.
   if (shouldEnableUltra) entry.multi_agent_version = 'v2';
 
-  // `default_reasoning_level` pairs with `supported_reasoning_levels` — both
-  // come from the same source. When registry supplied `effort`, its schema
-  // requires both fields together; otherwise the catalog pair rides through
-  // from the spread untouched.
-  if (registryEffort !== undefined) {
+  // `default_reasoning_level` follows the same source as the supported levels.
+  // A provider catalog may advertise levels without choosing a default.
+  if (registryEffort?.default !== undefined) {
     entry.default_reasoning_level = registryEffort.default;
+  } else if (registryEffort !== undefined) {
+    delete entry.default_reasoning_level;
   }
 
   // Miss-path `base_instructions` names the underlying model id so

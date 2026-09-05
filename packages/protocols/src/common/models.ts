@@ -23,7 +23,7 @@ export interface RerankTarget {
   path?: string;
 }
 
-export type Modality = 'text' | 'image';
+export type Modality = 'text' | 'image' | 'audio';
 
 // Chat capability metadata for one model. Providers that can read it off the
 // raw upstream catalog fill it themselves; elsewhere it comes from the
@@ -38,7 +38,7 @@ export interface ChatModelInfo {
   };
   reasoning?: {
     // Discrete effort levels — a closed set of named presets (e.g. low/medium/high).
-    effort?: { supported: readonly string[]; default: string };
+    effort?: { supported: readonly string[]; default?: string };
     // Operator-supplied token budget. Bounds are optional; absent bounds mean
     // "operator can supply a budget, but legal range is unknown".
     budget_tokens?: { min?: number; max?: number };

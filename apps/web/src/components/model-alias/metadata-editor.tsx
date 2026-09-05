@@ -36,6 +36,7 @@ export function MetadataEditor({ disabled, issues, kind, onChange, readOnly, val
     onChange({ ...value, chat: chat.modalities || chat.reasoning ? chat : undefined });
   };
   const effort = value.chat?.reasoning?.effort;
+  const effortDefault = effort?.default ?? '';
   const budget = value.chat?.reasoning?.budget_tokens;
   const issueProps = (field: AnnouncedMetadataField) => issues[field] === undefined
     ? {}
@@ -78,11 +79,11 @@ export function MetadataEditor({ disabled, issues, kind, onChange, readOnly, val
               disabled={disabled}
               label={t('dashboard.modelAliases.metadata.efforts')}
               hint={t('dashboard.modelAliases.metadata.effortsHint')}
-              onChange={supported => patchReasoning({ effort: { supported, default: supported.includes(effort.default) ? effort.default : supported[0] ?? '' } })}
+              onChange={supported => patchReasoning({ effort: { supported, default: supported.includes(effortDefault) ? effortDefault : supported[0] ?? '' } })}
               readOnly={readOnly}
               value={effort.supported}
             />
-            <Field label={t('dashboard.modelAliases.metadata.defaultEffort')}><Dropdown disabled={disabled || effort.supported.length === 0} readOnly={readOnly} selectedOptions={[effort.default]} value={effort.default} onOptionSelect={(_, data) => data.optionValue !== undefined && patchReasoning({ effort: { supported: effort.supported, default: data.optionValue } })}>{effort.supported.map(item => <Option key={item} value={item}>{item}</Option>)}</Dropdown></Field>
+            <Field label={t('dashboard.modelAliases.metadata.defaultEffort')}><Dropdown disabled={disabled || effort.supported.length === 0} readOnly={readOnly} selectedOptions={effortDefault === '' ? [] : [effortDefault]} value={effortDefault} onOptionSelect={(_, data) => data.optionValue !== undefined && patchReasoning({ effort: { supported: effort.supported, default: data.optionValue } })}>{effort.supported.map(item => <Option key={item} value={item}>{item}</Option>)}</Dropdown></Field>
           </div>}
           {budget && <div className={`${TWO_COLUMN_FORM_CLASS} gap-3`}>
             <Field label={t('dashboard.modelAliases.metadata.minBudget')} {...issueProps('budgetMin')}><Input disabled={disabled} min={0} readOnly={readOnly} type="number" value={budget.min?.toString() ?? ''} onChange={(_, data) => patchReasoning({ budget_tokens: { ...budget, min: numberValue(data.value) } })} /></Field>

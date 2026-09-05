@@ -29,7 +29,7 @@ describe('upstreamModelSchema chat', () => {
   test('accepts a valid chat block with effort', () => {
     const body = structuredClone(baseAzure);
     (body.config.models[0] as Record<string, unknown>).chat = {
-      modalities: { input: ['text', 'image'], output: ['text'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
       reasoning: { effort: { supported: ['low', 'medium'], default: 'low' } },
     };
     expect(createUpstreamBody.safeParse(body).success).toBe(true);

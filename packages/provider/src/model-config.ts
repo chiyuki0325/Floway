@@ -149,7 +149,7 @@ export const pricingField = (value: unknown, label: string): ModelPricing | unde
 
 const RERANK_PROTOCOL_SET: ReadonlySet<RerankProtocol> = new Set(RERANK_PROTOCOLS);
 
-const MODALITY_VALUES: ReadonlySet<Modality> = new Set<Modality>(['text', 'image']);
+const MODALITY_VALUES: ReadonlySet<Modality> = new Set<Modality>(['text', 'image', 'audio']);
 
 const modalityArrayField = (value: unknown, label: string): readonly Modality[] => {
   if (!Array.isArray(value)) throw new Error(`Malformed ${label}: must be an array`);

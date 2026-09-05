@@ -54,13 +54,23 @@ test('SQL upstream repo round-trips the cached catalog and its revision', async 
   await repo.saveModelsCache('up_test', generationFor(baseRecord()), {
     revision: MODEL_CATALOG_REVISION,
     fetchedAt: 1_700_000_000_000,
-    models: [stubProviderModel({ id: 'cached-model' })],
+    models: [stubProviderModel({
+      id: 'cached-model',
+      chat: {
+        modalities: { input: ['text', 'audio'], output: ['text'] },
+        reasoning: { effort: { supported: ['low', 'high'] } },
+      },
+    })],
   });
 
   const cached = (await repo.getById('up_test'))?.modelsCache;
   assertEquals(cached?.revision, MODEL_CATALOG_REVISION);
   assertEquals(cached?.fetchedAt, 1_700_000_000_000);
   assertEquals(cached?.models.map(model => model.id), ['cached-model']);
+  assertEquals(cached?.models[0]?.chat, {
+    modalities: { input: ['text', 'audio'], output: ['text'] },
+    reasoning: { effort: { supported: ['low', 'high'] } },
+  });
   assertEquals(cached?.lastError, null);
 });
 

@@ -223,9 +223,10 @@ function NumberField({ label, onChange, placeholder, readOnly, value }: { label:
 
 function EffortEditor({ effort, onChange, readOnly, t }: { readOnly: boolean; effort: NonNullable<UpstreamChatModelConfig['reasoning']>['effort'] & {}; onChange: (effort: NonNullable<UpstreamChatModelConfig['reasoning']>['effort']) => void; t: TFunction }) {
   const supported = effort.supported;
+  const defaultEffort = effort.default ?? '';
   const setSupported = (values: readonly string[]) => onChange({
     supported: [...values],
-    default: values.includes(effort.default) ? effort.default : values[0] ?? '',
+    default: values.includes(defaultEffort) ? defaultEffort : values[0] ?? '',
   });
   return <div className={`grid grid-cols-[minmax(0,1fr)_minmax(180px,0.45fr)] ${PANE_GAP_CLASS} max-[760px]:grid-cols-1`}>
     <Field label={t('dashboard.upstreamEditor.models.supportedEfforts')}>
@@ -241,7 +242,7 @@ function EffortEditor({ effort, onChange, readOnly, t }: { readOnly: boolean; ef
       />
     </Field>
     <Field label={t('dashboard.upstreamEditor.models.defaultEffort')}>
-      <Dropdown disabled={supported.length === 0} readOnly={readOnly} selectedOptions={[effort.default]} value={effort.default} onOptionSelect={(_, data) => data.optionValue !== undefined && onChange({ ...effort, default: data.optionValue })}>
+      <Dropdown disabled={supported.length === 0} readOnly={readOnly} selectedOptions={defaultEffort === '' ? [] : [defaultEffort]} value={defaultEffort} onOptionSelect={(_, data) => data.optionValue !== undefined && onChange({ ...effort, default: data.optionValue })}>
         {supported.map(level => <Option key={level} value={level}>{level}</Option>)}
       </Dropdown>
     </Field>

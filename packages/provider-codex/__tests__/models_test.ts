@@ -21,8 +21,14 @@ describe('fetchCodexCatalog', () => {
     }));
     const catalog = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', isFedRampAccount: true, fetcher: directFetcher });
     expect(catalog).toHaveLength(3);
-    expect(catalog[0]).toEqual({ id: 'gpt-5.4', display_name: 'GPT-5.4', context_window: 272000 });
-    expect(catalog[2]).toEqual({ id: 'codex-auto-review', display_name: 'Codex Auto Review', context_window: 272000 });
+    expect(catalog[0]).toMatchObject({
+      id: 'gpt-5.4',
+      display_name: 'GPT-5.4',
+      context_window: 272000,
+      input_modalities: ['text', 'image'],
+      catalog: { context_window: 272000, max_context_window: 1000000, effective_context_window_percent: 95, use_responses_lite: false },
+    });
+    expect(catalog[2]).toMatchObject({ id: 'codex-auto-review', display_name: 'Codex Auto Review', context_window: 272000 });
     expect(spy).toHaveBeenCalledTimes(1);
     const [url, init] = spy.mock.calls[0];
     expect(url).toBe(`https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLI_VERSION}`);
@@ -56,9 +62,16 @@ describe('fetchCodexCatalog', () => {
     await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/display_name/);
   });
 
-  test('throws on entry missing context_window', async () => {
+  test('falls back to max_context_window when context_window is absent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({ models: [{ slug: 'gpt-x', display_name: 'GPT-X', max_context_window: 1000000 }] }));
+    const [model] = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher });
+    expect(model).toMatchObject({ context_window: 1000000, catalog: { max_context_window: 1000000 } });
+    expect(model?.catalog?.context_window).toBeUndefined();
+  });
+
+  test('throws when both context windows are absent', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({ models: [{ slug: 'gpt-x', display_name: 'GPT-X' }] }));
-    await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/context_window/);
+    await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/context_window.*max_context_window/);
   });
 
   test('carries input_modalities, supported_reasoning_levels, default_reasoning_level through to CodexRawModel', async () => {
@@ -79,7 +92,7 @@ describe('fetchCodexCatalog', () => {
     }));
     const catalog = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher });
     expect(catalog).toHaveLength(1);
-    expect(catalog[0]).toEqual({
+    expect(catalog[0]).toMatchObject({
       id: 'gpt-5.5',
       display_name: 'GPT-5.5',
       context_window: 272000,
@@ -87,18 +100,88 @@ describe('fetchCodexCatalog', () => {
       reasoning_efforts: ['low', 'medium', 'high'],
       default_reasoning_effort: 'medium',
       use_responses_lite: true,
+      catalog: {
+        supported_reasoning_levels: [
+          { effort: 'low', description: 'Fast' },
+          { effort: 'medium', description: 'Balanced' },
+          { effort: 'high', description: 'Thorough' },
+        ],
+        default_reasoning_level: 'medium',
+        use_responses_lite: true,
+      },
     });
   });
 
-  test('tolerates entries missing the new optional fields (pre-catalog backwards compat)', async () => {
+  test('applies Codex defaults to omitted modalities and effective context percentage', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
       models: [{ slug: 'gpt-old', display_name: 'GPT-Old', context_window: 100000 }],
     }));
     const catalog = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher });
-    expect(catalog[0]).toEqual({ id: 'gpt-old', display_name: 'GPT-Old', context_window: 100000 });
-    expect(catalog[0].input_modalities).toBeUndefined();
+    expect(catalog[0]).toMatchObject({
+      id: 'gpt-old',
+      display_name: 'GPT-Old',
+      context_window: 100000,
+      input_modalities: ['text', 'image'],
+      catalog: { effective_context_window_percent: 95, input_modalities: ['text', 'image'], use_responses_lite: false },
+    });
     expect(catalog[0].reasoning_efforts).toBeUndefined();
     expect(catalog[0].default_reasoning_effort).toBeUndefined();
+  });
+
+  test('retains audio and request-affecting catalog capabilities', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
+      models: [{
+        slug: 'gpt-next',
+        display_name: 'GPT Next',
+        max_context_window: 1000000,
+        effective_context_window_percent: 90,
+        input_modalities: ['text', 'image', 'audio'],
+        supported_reasoning_levels: [{ effort: 'high', description: 'Deep' }],
+        support_verbosity: true,
+        default_verbosity: 'low',
+        service_tiers: [{ id: 'priority', name: 'Fast', description: 'Faster' }],
+        default_service_tier: null,
+        additional_speed_tiers: ['fast'],
+        supports_search_tool: true,
+        web_search_tool_type: 'text_and_image',
+        supports_reasoning_summary_parameter: true,
+        default_reasoning_summary: 'none',
+        shell_type: 'unified_exec',
+        apply_patch_tool_type: 'freeform',
+        truncation_policy: { mode: 'tokens', limit: 10000 },
+        supports_image_detail_original: true,
+        experimental_supported_tools: ['node_repl'],
+        auto_compact_token_limit: null,
+        comp_hash: '3000',
+        model_messages: { instructions_template: 'template' },
+        include_skills_usage_instructions: true,
+        include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: true,
+        node_repl_auto_review_required: true,
+        node_repl_disabled: false,
+        auto_review_model_override: null,
+        model_specialty: 'coding',
+        tool_mode: 'code_mode_only',
+        multi_agent_version: 'v2',
+        multi_agent_reasoning_effort: 'xhigh',
+      }],
+    }));
+
+    const [model] = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher });
+    expect(model?.input_modalities).toEqual(['text', 'image', 'audio']);
+    expect(model?.catalog).toMatchObject({
+      max_context_window: 1000000,
+      effective_context_window_percent: 90,
+      input_modalities: ['text', 'image', 'audio'],
+      support_verbosity: true,
+      default_verbosity: 'low',
+      service_tiers: [{ id: 'priority', name: 'Fast', description: 'Faster' }],
+      supports_search_tool: true,
+      web_search_tool_type: 'text_and_image',
+      shell_type: 'unified_exec',
+      tool_mode: 'code_mode_only',
+      multi_agent_version: 'v2',
+    });
   });
 
   test('throws on malformed input_modalities entry (unknown modality)', async () => {
@@ -120,6 +203,13 @@ describe('fetchCodexCatalog', () => {
       models: [{ slug: 'gpt-x', display_name: 'GPT-X', context_window: 1, use_responses_lite: 'true' }],
     }));
     await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/use_responses_lite malformed/);
+  });
+
+  test('throws when a retained capability changes type', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
+      models: [{ slug: 'gpt-x', display_name: 'GPT-X', context_window: 1, service_tiers: [{ id: 'priority', name: 42, description: 'Fast' }] }],
+    }));
+    await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/service_tiers malformed/);
   });
 });
 
@@ -202,6 +292,29 @@ describe('codexRawToProviderModel', () => {
     expect(codexModelUsesResponsesLite(regular)).toBe(false);
   });
 
+  test('projects catalog context and audio while retaining the Codex sidecar', () => {
+    const catalog = {
+      max_context_window: 1000000,
+      effective_context_window_percent: 90,
+      input_modalities: ['text', 'image', 'audio'] as const,
+      use_responses_lite: false,
+      support_verbosity: true,
+      service_tiers: [{ id: 'priority', name: 'Fast', description: 'Faster' }],
+      supports_search_tool: true,
+    };
+    const m = codexRawToProviderModel({
+      id: 'gpt-next',
+      display_name: 'GPT Next',
+      context_window: 1000000,
+      input_modalities: ['text', 'image', 'audio'],
+      catalog,
+    }, noFlags);
+
+    expect(m.limits).toEqual({ max_context_window_tokens: 1000000, max_prompt_tokens: 900000 });
+    expect(m.chat?.modalities).toEqual({ input: ['text', 'image', 'audio'], output: ['text'] });
+    expect(m.providerData).toEqual({ catalog });
+  });
+
   test('populates chat when raw advertises both modalities and reasoning', () => {
     const m = codexRawToProviderModel({
       id: 'gpt-5.5',
@@ -235,24 +348,14 @@ describe('codexRawToProviderModel', () => {
     expect(m.chat?.reasoning).toBeUndefined();
   });
 
-  test('derives default = medium when supported includes medium and default_reasoning_level absent', () => {
+  test('preserves an absent default_reasoning_level', () => {
     const m = codexRawToProviderModel({
       id: 'gpt-5.5',
       display_name: 'GPT-5.5',
       context_window: 272000,
       reasoning_efforts: ['low', 'medium', 'high'],
     }, noFlags);
-    expect(m.chat?.reasoning).toEqual({ effort: { supported: ['low', 'medium', 'high'], default: 'medium' } });
-  });
-
-  test('derives default = first when medium absent and default_reasoning_level absent', () => {
-    const m = codexRawToProviderModel({
-      id: 'gpt-5.5',
-      display_name: 'GPT-5.5',
-      context_window: 272000,
-      reasoning_efforts: ['low', 'high'],
-    }, noFlags);
-    expect(m.chat?.reasoning).toEqual({ effort: { supported: ['low', 'high'], default: 'low' } });
+    expect(m.chat?.reasoning).toEqual({ effort: { supported: ['low', 'medium', 'high'] } });
   });
 
   test('drops reasoning entirely when default_reasoning_level present but supported_reasoning_levels absent', () => {

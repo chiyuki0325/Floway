@@ -28,11 +28,11 @@ const announcedMetadataSchema = z.object({
   limits: limitsSchema.optional(),
   chat: z.object({
     modalities: z.object({
-      input: z.array(z.enum(['text', 'image'])),
-      output: z.array(z.enum(['text', 'image'])),
+      input: z.array(z.enum(['text', 'image', 'audio'])),
+      output: z.array(z.enum(['text', 'image', 'audio'])),
     }).passthrough().optional(),
     reasoning: z.object({
-      effort: z.object({ supported: z.array(z.string()), default: z.string() }).passthrough().optional(),
+      effort: z.object({ supported: z.array(z.string()), default: z.string().optional() }).passthrough().optional(),
       budget_tokens: z.object({ min: z.number().optional(), max: z.number().optional() }).passthrough().optional(),
       adaptive: z.boolean().optional(),
       mandatory: z.boolean().optional(),
