@@ -167,7 +167,7 @@ export interface CodexCompactionTurnMetadata {
 }
 
 export interface CodexTurnMetadataOptions {
-  requestKind: 'turn' | 'compaction';
+  requestKind: 'turn' | 'prewarm' | 'compaction' | 'memory';
   compaction?: CodexCompactionTurnMetadata;
 }
 
@@ -203,6 +203,14 @@ const nonNegativeIntegerField = (record: Record<string, unknown> | null, key: st
   const value = record[key];
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 };
+
+const utf8Length = (value: string): number => new TextEncoder().encode(value).byteLength;
+
+const isValidExtraMetadataKey = (key: string): boolean =>
+  /^[A-Za-z][A-Za-z0-9_.-]*$/.test(key) && utf8Length(key) <= MAX_EXTRA_METADATA_KEY_BYTES;
+
+const isCodexRequestKind = (value: unknown): value is CodexTurnMetadataOptions['requestKind'] =>
+  value === 'turn' || value === 'prewarm' || value === 'compaction' || value === 'memory';
 
 const clientCodexClientMetadata = (body: unknown): Record<string, unknown> => {
   if (!isPlainObject(body)) return {};
@@ -246,6 +254,24 @@ const callerTurnMetadata = (opts: CodexBackendCallBase, clientMetadata: Record<s
 const IDENTITY_MIRRORED_TURN_METADATA_KEYS = new Set<string>([
   'context_window_id', 'installation_id', 'session_id', 'thread_id', 'turn_id', 'window_id', 'window_number',
 ]);
+
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/responses_metadata.rs#L27-L101
+const CURRENT_TURN_METADATA_KEYS = new Set<string>([
+  ...IDENTITY_MIRRORED_TURN_METADATA_KEYS,
+  'agent_name', 'auto_review_enabled', 'compaction', 'forked_from_ordinal_exclusive', 'forked_from_thread_id',
+  'history_ingest_requested', 'node_repl_auto_review_required', 'node_repl_disabled', 'parent_thread_id',
+  'parent_turn_id', 'request_kind', 'root_turn_id', 'sandbox', 'sandbox_mode', 'subagent_kind', 'thread_source',
+  'tool_namespaces_info', 'turn_started_at_unix_ms', 'turn_trigger', 'workspaces',
+]);
+
+const RESERVED_EXTRA_METADATA_KEYS = new Set<string>([
+  ...CURRENT_TURN_METADATA_KEYS,
+  'code_mode_tool_names', 'x-codex-installation-id', 'x-codex-parent-thread-id', 'x-codex-turn-metadata',
+  'x-codex-window-id', 'x-openai-subagent',
+]);
+const MAX_EXTRA_METADATA_ENTRIES = 16;
+const MAX_EXTRA_METADATA_KEY_BYTES = 64;
+const MAX_EXTRA_METADATA_VALUE_BYTES = 128;
 
 const IDENTITY_MIRRORED_CLIENT_METADATA_KEYS = new Set<string>([
   'x-codex-installation-id', 'session_id', 'thread_id', 'x-codex-window-id', 'turn_id', 'x-codex-turn-metadata',
@@ -349,12 +375,28 @@ const buildCodexTurnMetadata = (
     request_kind: options.requestKind,
   };
   if (options.compaction !== undefined) base.compaction = options.compaction;
-  if (clientOverrides === null) return base;
-  // Identity-mirror keys already came from `identity`; only carry the
-  // caller's extras (turn_started_at_unix_ms, sandbox, workspaces,
-  // parent_thread_id, …) into the outgoing blob.
-  for (const [k, v] of Object.entries(clientOverrides)) {
-    if (!IDENTITY_MIRRORED_TURN_METADATA_KEYS.has(k)) base[k] = v;
+  let extraCount = 0;
+  for (const [key, value] of Object.entries(clientOverrides ?? {})) {
+    if (IDENTITY_MIRRORED_TURN_METADATA_KEYS.has(key)) continue;
+    if (CURRENT_TURN_METADATA_KEYS.has(key)) {
+      if (key !== 'request_kind' || isCodexRequestKind(value)) base[key] = value;
+      continue;
+    }
+    if (
+      RESERVED_EXTRA_METADATA_KEYS.has(key)
+      || typeof value !== 'string'
+      || extraCount >= MAX_EXTRA_METADATA_ENTRIES
+      || !isValidExtraMetadataKey(key)
+      || utf8Length(value) > MAX_EXTRA_METADATA_VALUE_BYTES
+    ) continue;
+    base[key] = value;
+    extraCount++;
+  }
+  const requestKind = base.request_kind;
+  if (requestKind !== 'compaction') delete base.compaction;
+  if (requestKind === 'memory') {
+    for (const key of IDENTITY_MIRRORED_TURN_METADATA_KEYS) delete base[key];
+    delete base.agent_name;
   }
   return base;
 };
