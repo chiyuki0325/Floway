@@ -157,7 +157,7 @@ describe('callCodexResponses — gates', () => {
 describe('callCodexResponses — token freshness', () => {
   test('refreshes before call when no cached access token', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at_new', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at_new', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(sseResponse());
     const effects = makeEffects();
     const result = await callCodexResponses({
@@ -849,7 +849,7 @@ describe('callCodexResponses — upstream classification', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }));
     const effects = makeEffects();
     const result = await callCodexResponses({
@@ -896,9 +896,9 @@ describe('callCodexResponses — upstream classification', () => {
   test('retains a newly observed plan when the 401 refresh omits it', async () => {
     seedAccountState({ accessToken: null });
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free'), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free') }))
       .mockResolvedValueOnce(sseResponse(401))
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan(), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
       .mockResolvedValueOnce(sseResponse());
     const result = await callCodexResponses({
       upstreamId, account: activeAccount, model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
@@ -930,7 +930,7 @@ describe('callCodexResponses — background-write registration', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(sseResponse());
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
     await callCodexResponses({
@@ -975,7 +975,7 @@ describe('callCodexImagesGenerations', () => {
     seedFreshAccessToken({ ...farFutureAccessToken, planType: 'plus' });
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('plus'), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('plus') }))
       .mockResolvedValueOnce(errorJson(200, { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }));
     const result = await callCodexImagesGenerations({
       upstreamId,
@@ -1001,7 +1001,7 @@ describe('callCodexImagesGenerations', () => {
   test('uses a refreshed Free plan before dispatching the image request', async () => {
     seedAccountState({ accessToken: null });
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(errorJson(200, {
-      access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'), expires_in: 600,
+      access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'),
     }));
     const result = await callCodexImagesGenerations({
       upstreamId,
@@ -1023,7 +1023,7 @@ describe('callCodexImagesGenerations', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(errorJson(200, {
-        access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'), expires_in: 600,
+        access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'),
       }));
     const result = await callCodexImagesGenerations({
       upstreamId,
@@ -1072,7 +1072,7 @@ describe('callCodexImagesGenerations', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(errorJson(200, {
-        access_token: 'at2', refresh_token: 'rt_v2', id_token: idTokenWithoutPlan(), expires_in: 600,
+        access_token: 'at2', refresh_token: 'rt_v2', id_token: idTokenWithoutPlan(),
       }))
       .mockResolvedValueOnce(errorJson(200, { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }));
     const result = await callCodexImagesGenerations({
@@ -1190,7 +1190,7 @@ describe('callCodexResponsesCompact', () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(compactJsonResponse());
     const effects = makeEffects();
     const result = await callCodexResponsesCompact({
@@ -1207,9 +1207,9 @@ describe('callCodexResponsesCompact', () => {
   test('retains a newly observed plan when the compact 401 refresh omits it', async () => {
     seedAccountState({ accessToken: null });
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free'), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free') }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan(), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
       .mockResolvedValueOnce(compactJsonResponse());
     const result = await callCodexResponsesCompact({
       upstreamId,
@@ -1308,9 +1308,9 @@ describe('callCodexAlphaSearch', () => {
   test('retains a newly observed plan when the search 401 refresh omits it', async () => {
     seedAccountState({ accessToken: null });
     vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free'), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free') }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
-      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan(), expires_in: 600 }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
       .mockResolvedValueOnce(errorJson(200, { encrypted_output: null, output: 'Search result', results: [] }));
     const result = await callCodexAlphaSearch({
       upstreamId,

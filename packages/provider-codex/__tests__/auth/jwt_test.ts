@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { parseCodexIdTokenClaims } from '../../src/auth/jwt.ts';
+import { parseCodexAccessTokenExpiresAt, parseCodexIdTokenClaims } from '../../src/auth/jwt.ts';
 
 // Helper builds a minimal JWT with given payload. Signature segment is fake.
 const encodeBase64Url = (text: string): string => {
@@ -15,6 +15,24 @@ const makeJwt = (payload: unknown): string => {
   const body = encodeBase64Url(JSON.stringify(payload));
   return `${header}.${body}.fake-signature`;
 };
+
+describe('parseCodexAccessTokenExpiresAt', () => {
+  test('converts an integer Unix expiration to milliseconds', () => {
+    expect(parseCodexAccessTokenExpiresAt(makeJwt({ exp: 1_800_000_000 }))).toBe(1_800_000_000_000);
+    expect(parseCodexAccessTokenExpiresAt(makeJwt({ exp: 1 }))).toBe(1000);
+  });
+
+  test.each([
+    makeJwt({}),
+    makeJwt({ exp: '1800000000' }),
+    makeJwt({ exp: 1.5 }),
+    makeJwt({ exp: Number.MAX_SAFE_INTEGER }),
+    'not-a-jwt',
+    'aaa.!!!.bbb',
+  ])('returns undefined for missing or malformed expiration', token => {
+    expect(parseCodexAccessTokenExpiresAt(token)).toBeUndefined();
+  });
+});
 
 describe('parseCodexIdTokenClaims', () => {
   test('extracts all identity claims', () => {

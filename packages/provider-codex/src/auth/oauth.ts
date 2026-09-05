@@ -3,18 +3,22 @@ import {
   CODEX_CLIENT_ID,
   CODEX_OAUTH_SCOPE,
   CODEX_OAUTH_TOKEN_URL,
-  CODEX_OAUTH_USER_AGENT,
   CODEX_ORIGINATOR,
   CODEX_REDIRECT_URI,
+  CODEX_USER_AGENT,
 } from '../constants.ts';
 import type { Fetcher } from '@floway-dev/provider';
 
-export interface CodexOAuthTokens {
+export interface CodexAuthorizationCodeTokens {
   access_token: string;
   refresh_token: string;
   id_token: string;
-  // Lifetime in seconds, relative to the server's clock at issue time.
-  expires_in: number;
+}
+
+export interface CodexRefreshTokens {
+  access_token?: string;
+  refresh_token?: string;
+  id_token?: string;
 }
 
 export const buildCodexAuthorizeUrl = (input: { state: string; codeChallenge: string }): string => {
@@ -82,20 +86,11 @@ const REFRESH_TERMINAL_OAUTH_CODES: ReadonlySet<string> = new Set([
 ]);
 
 const codexTokenRequest = async (
-  body: URLSearchParams,
+  init: RequestInit,
   terminalCodes: ReadonlySet<string>,
   fetcher: Fetcher,
-): Promise<CodexOAuthTokens> => {
-  const response = await fetcher(CODEX_OAUTH_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/x-www-form-urlencoded',
-      'user-agent': CODEX_OAUTH_USER_AGENT,
-      accept: 'application/json',
-    },
-    body: body.toString(),
-  });
-
+): Promise<Record<string, unknown>> => {
+  const response = await fetcher(CODEX_OAUTH_TOKEN_URL, init);
   const rawText = await response.text();
   let parsed: unknown;
   try {
@@ -127,20 +122,20 @@ const codexTokenRequest = async (
   }
 
   if (root === null) throw new Error('Codex OAuth /token response is not an object');
-  for (const key of ['access_token', 'refresh_token', 'id_token'] as const) {
-    if (typeof root[key] !== 'string' || root[key] === '') {
-      throw new Error(`Codex OAuth /token response missing ${key}`);
-    }
-  }
-  if (typeof root.expires_in !== 'number' || !Number.isFinite(root.expires_in)) {
-    throw new Error('Codex OAuth /token response missing expires_in');
-  }
-  return {
-    access_token: root.access_token as string,
-    refresh_token: root.refresh_token as string,
-    id_token: root.id_token as string,
-    expires_in: root.expires_in as number,
-  };
+  return root;
+};
+
+const requiredToken = (root: Record<string, unknown>, key: 'access_token' | 'refresh_token' | 'id_token'): string => {
+  const value = root[key];
+  if (typeof value !== 'string' || value === '') throw new Error(`Codex OAuth /token response missing ${key}`);
+  return value;
+};
+
+const optionalToken = (root: Record<string, unknown>, key: 'access_token' | 'refresh_token' | 'id_token'): string | undefined => {
+  const value = root[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || value === '') throw new Error(`Codex OAuth /token response has malformed ${key}`);
+  return value;
 };
 
 // PKCE exchange runs before the upstream record exists, so there is no
@@ -149,7 +144,7 @@ const codexTokenRequest = async (
 // egress) keeps every call site honest: callers that want direct egress
 // pass `directFetcher` themselves, and the import path can't accidentally
 // bypass an operator-configured proxy.
-export const exchangeCodexAuthorizationCode = async (opts: { code: string; codeVerifier: string; fetcher: Fetcher }): Promise<CodexOAuthTokens> => {
+export const exchangeCodexAuthorizationCode = async (opts: { code: string; codeVerifier: string; fetcher: Fetcher }): Promise<CodexAuthorizationCodeTokens> => {
   // auth.openai.com rejects exchanges that include a `state` parameter with
   // 400 unknown_parameter (live-probed). The upstream Codex CLI's
   // `exchange_code_for_tokens` in codex-rs/login/src/server.rs deliberately
@@ -163,23 +158,46 @@ export const exchangeCodexAuthorizationCode = async (opts: { code: string; codeV
     redirect_uri: CODEX_REDIRECT_URI,
     code_verifier: opts.codeVerifier,
   });
-  return await codexTokenRequest(body, EXCHANGE_TERMINAL_OAUTH_CODES, opts.fetcher);
+  const root = await codexTokenRequest({
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  }, EXCHANGE_TERMINAL_OAUTH_CODES, opts.fetcher);
+  return {
+    access_token: requiredToken(root, 'access_token'),
+    refresh_token: requiredToken(root, 'refresh_token'),
+    id_token: requiredToken(root, 'id_token'),
+  };
 };
 
 // `fetcher` is required because the refresh has an associated upstream
 // and must flow through that upstream's proxy-aware fallback chain rather
 // than direct egress.
-export const refreshCodexAccessToken = async (refreshToken: string, fetcher: Fetcher): Promise<CodexOAuthTokens> => {
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    client_id: CODEX_CLIENT_ID,
-    scope: CODEX_OAUTH_SCOPE,
-  });
+export const refreshCodexAccessToken = async (refreshToken: string, fetcher: Fetcher): Promise<CodexRefreshTokens> => {
   // OAuth `invalid_grant` on the refresh path is ambiguous on its own — it
   // can mean a genuinely revoked/expired refresh_token, *or* that a sibling
   // worker raced us, won the rotation, and our copy is now stale. The
   // access-token module's `recoverFromRefreshRace` distinguishes by re-reading
   // upstream state; the other codes here always mean credential death.
-  return await codexTokenRequest(body, REFRESH_TERMINAL_OAUTH_CODES, fetcher);
+  const root = await codexTokenRequest({
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'user-agent': CODEX_USER_AGENT,
+      originator: CODEX_ORIGINATOR,
+    },
+    body: JSON.stringify({
+      client_id: CODEX_CLIENT_ID,
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }),
+  }, REFRESH_TERMINAL_OAUTH_CODES, fetcher);
+  const accessToken = optionalToken(root, 'access_token');
+  const rotatedRefreshToken = optionalToken(root, 'refresh_token');
+  const idToken = optionalToken(root, 'id_token');
+  return {
+    ...(accessToken === undefined ? {} : { access_token: accessToken }),
+    ...(rotatedRefreshToken === undefined ? {} : { refresh_token: rotatedRefreshToken }),
+    ...(idToken === undefined ? {} : { id_token: idToken }),
+  };
 };

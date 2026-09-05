@@ -1,4 +1,4 @@
-import { parseCodexIdTokenPlanType } from './auth/jwt.ts';
+import { parseCodexAccessTokenExpiresAt, parseCodexIdTokenPlanType } from './auth/jwt.ts';
 import { CodexOAuthSessionTerminatedError, refreshCodexAccessToken } from './auth/oauth.ts';
 import { findCodexAccountIndex, readCodexUpstreamState, replaceCodexAccount, type CodexAccessTokenEntry } from './state.ts';
 import { getProviderRepo, UpstreamGoneError, type Fetcher } from '@floway-dev/provider';
@@ -170,10 +170,15 @@ export const invalidateCodexAccessToken = async (
 // caught by `recoverFromRefreshRace` — same trade-off as claude-code.
 const inFlightEnsures = new Map<string, Promise<CodexAccessTokenEntry>>();
 
+type CodexAccessTokenMint = (
+  refreshToken: string,
+  previousAccessToken: CodexAccessTokenEntry | null,
+) => Promise<CodexAccessTokenEntry>;
+
 export const ensureCodexAccessToken = async (
   upstreamId: string,
   accountId: string,
-  mint: (refreshToken: string) => Promise<CodexAccessTokenEntry>,
+  mint: CodexAccessTokenMint,
   // When true, skip the "cached access_token is still fresh" fast-path and
   // always mint a fresh one. Dashboard's Refresh button sets this so the
   // operator sees the row's tokens actually rotate; the data plane leaves
@@ -195,7 +200,7 @@ export const ensureCodexAccessToken = async (
 const ensureCodexAccessTokenInner = async (
   upstreamId: string,
   accountId: string,
-  mint: (refreshToken: string) => Promise<CodexAccessTokenEntry>,
+  mint: CodexAccessTokenMint,
   recoveryAllowed: boolean,
   force: boolean,
 ): Promise<CodexAccessTokenEntry> => {
@@ -210,7 +215,7 @@ const ensureCodexAccessTokenInner = async (
 
   let minted;
   try {
-    minted = await mint(account.refresh_token);
+    minted = await mint(account.refresh_token, account.accessToken);
   } catch (err) {
     if (err instanceof CodexOAuthSessionTerminatedError && err.code === 'invalid_grant' && recoveryAllowed) {
       const recovered = await recoverFromRefreshRace(upstreamId, accountId, account.refresh_token, mint);
@@ -239,7 +244,7 @@ const recoverFromRefreshRace = async (
   upstreamId: string,
   accountId: string,
   usedRefreshToken: string,
-  mint: (refreshToken: string) => Promise<CodexAccessTokenEntry>,
+  mint: CodexAccessTokenMint,
 ): Promise<CodexAccessTokenEntry | null> => {
   const reread = await getProviderRepo().upstreams.getById(upstreamId);
   if (!reread) return null;
@@ -272,16 +277,29 @@ const recoverFromRefreshRace = async (
 // rotated token and the upstream eventually returns app_session_terminated.
 export const mintCodexAccessToken = async (
   refreshToken: string,
+  previousAccessToken: CodexAccessTokenEntry | null,
   fetcher: Fetcher,
   persistRefreshTokenRotation: (newRefreshToken: string) => Promise<void>,
 ): Promise<CodexAccessTokenEntry> => {
   const tokens = await refreshCodexAccessToken(refreshToken, fetcher);
-  await persistRefreshTokenRotation(tokens.refresh_token);
-  const planType = parseCodexIdTokenPlanType(tokens.id_token);
-  const refreshedAt = new Date().toISOString();
+  if (tokens.refresh_token !== undefined && tokens.refresh_token !== refreshToken) {
+    await persistRefreshTokenRotation(tokens.refresh_token);
+  }
+
+  const now = Date.now();
+  const refreshedAt = new Date(now).toISOString();
+  const planType = tokens.id_token === undefined ? undefined : parseCodexIdTokenPlanType(tokens.id_token);
+  if (tokens.access_token === undefined) {
+    if (previousAccessToken === null) {
+      throw new Error('Codex OAuth refresh response omitted access_token and no previous access token exists');
+    }
+    if (planType === undefined) return previousAccessToken;
+    return { ...previousAccessToken, planType, planObservedAt: refreshedAt };
+  }
+
   return {
     token: tokens.access_token,
-    expiresAt: Date.now() + tokens.expires_in * 1000,
+    expiresAt: parseCodexAccessTokenExpiresAt(tokens.access_token) ?? now,
     refreshedAt,
     ...(planType === undefined ? {} : { planType, planObservedAt: refreshedAt }),
   };

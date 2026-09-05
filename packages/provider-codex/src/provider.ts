@@ -96,8 +96,8 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
       // failure and surfaces it to the operator.
       let access;
       try {
-        access = await ensureCodexAccessToken(record.id, accountIdentity.chatgptAccountId, refreshToken =>
-          mintCodexAccessToken(refreshToken, fetcher, persistRefreshTokenRotation));
+        access = await ensureCodexAccessToken(record.id, accountIdentity.chatgptAccountId, (refreshToken, previousAccessToken) =>
+          mintCodexAccessToken(refreshToken, previousAccessToken, fetcher, persistRefreshTokenRotation));
       } catch (err) {
         if (err instanceof CodexOAuthSessionTerminatedError) {
           await persistTerminalState('refresh_failed', err.upstreamMessage);

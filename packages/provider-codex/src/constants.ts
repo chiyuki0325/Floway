@@ -21,15 +21,6 @@ export const CODEX_REDIRECT_URI = 'http://localhost:1455/auth/callback';
 // the MCP-connector feature and unrelated to /codex/responses.
 export const CODEX_OAUTH_SCOPE = 'openid profile email offline_access';
 
-// OAuth User-Agent. Pinned independently of the data-plane CODEX_CLI_VERSION:
-// `0.91.0` is the version captured by OpenAI when the codex-cli OAuth client
-// was first registered, and the auth.openai.com /token + /authorize endpoints
-// continue to accept it across CLI revisions (cross-checked against
-// sub2api/backend, which is in continuous production use against the same
-// endpoints with this exact UA). Note the hyphen-lowercase product name —
-// distinct from the underscore form used on the data plane below.
-export const CODEX_OAUTH_USER_AGENT = 'codex-cli/0.91.0';
-
 export const CODEX_BACKEND_BASE = 'https://chatgpt.com/backend-api';
 export const CODEX_RESPONSES_PATH = '/codex/responses';
 // Codex appends `alpha/search` to its ChatGPT model-provider base.

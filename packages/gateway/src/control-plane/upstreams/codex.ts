@@ -126,7 +126,7 @@ export const codexOAuthRefresh = async (c: CtxWithJson<typeof codexOAuthRefreshB
 
   try {
     await ensureCodexAccessToken(record.id, account.chatgptAccountId,
-      refreshToken => mintCodexAccessToken(refreshToken, fetcher, persistRefreshTokenRotation),
+      (refreshToken, previousAccessToken) => mintCodexAccessToken(refreshToken, previousAccessToken, fetcher, persistRefreshTokenRotation),
       true);
   } catch (err) {
     if (err instanceof CodexOAuthSessionTerminatedError) {
