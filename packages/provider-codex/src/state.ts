@@ -36,7 +36,7 @@ export type CodexQuotaSnapshotEntryMap = Record<string, CodexQuotaSnapshotEntry>
 // One account's autonomous credential state, joined back to its identity in
 // CodexUpstreamConfig.accounts via `chatgptAccountId`.
 export interface CodexAccountCredential {
-  chatgptAccountId: string;
+  chatgptAccountId?: string;
   // OpenAI rotates refresh_token on every /oauth/token call. Stored in D1
   // (not KV) so KV eviction never forces operator re-import.
   refresh_token: string;
@@ -66,7 +66,7 @@ export interface CodexUpstreamState {
   accounts: CodexAccountCredential[];
 }
 
-export const findCodexAccountIndex = (state: CodexUpstreamState, accountId: string): number =>
+export const findCodexAccountIndex = (state: CodexUpstreamState, accountId: string | undefined): number =>
   state.accounts.findIndex(account => account.chatgptAccountId === accountId);
 
 export const replaceCodexAccount = (
@@ -183,8 +183,8 @@ const assertCodexAccountCredential = (value: unknown, where: string): void => {
       throw new TypeError(`${where} has unexpected key '${key}'`);
     }
   }
-  if (typeof obj.chatgptAccountId !== 'string' || obj.chatgptAccountId === '') {
-    throw new TypeError(`${where}.chatgptAccountId must be a non-empty string`);
+  if (obj.chatgptAccountId !== undefined && (typeof obj.chatgptAccountId !== 'string' || obj.chatgptAccountId === '')) {
+    throw new TypeError(`${where}.chatgptAccountId must be a non-empty string when present`);
   }
   if (typeof obj.refresh_token !== 'string' || obj.refresh_token === '') {
     throw new TypeError(`${where}.refresh_token must be a non-empty string`);

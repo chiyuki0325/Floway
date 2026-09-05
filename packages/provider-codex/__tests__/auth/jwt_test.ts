@@ -49,6 +49,7 @@ describe('parseCodexIdTokenClaims', () => {
       chatgptAccountId: 'acc_123',
       chatgptUserId: 'user-abc',
       planType: 'plus',
+      isFedRampAccount: false,
     });
   });
 
@@ -61,25 +62,28 @@ describe('parseCodexIdTokenClaims', () => {
     expect(() => parseCodexIdTokenClaims('aaa.!!!.bbb')).toThrow();
   });
 
-  test('rejects token missing required claims', () => {
-    const noAccountId = makeJwt({
-      'https://api.openai.com/auth': { chatgpt_user_id: 'u', chatgpt_plan_type: 'plus' },
-      'https://api.openai.com/profile': { email: 'a@b' },
-    });
-    expect(() => parseCodexIdTokenClaims(noAccountId)).toThrow(/chatgpt_account_id/);
-
-    const noEmail = makeJwt({
-      'https://api.openai.com/auth': { chatgpt_account_id: 'a', chatgpt_user_id: 'u', chatgpt_plan_type: 'plus' },
-    });
-    expect(() => parseCodexIdTokenClaims(noEmail)).toThrow(/email/);
+  test('allows absent auth and identity claims', () => {
+    expect(parseCodexIdTokenClaims(makeJwt({}))).toEqual({ isFedRampAccount: false });
   });
 
-  test('accepts top-level email when /profile is absent (observed real-world id_token shape)', () => {
+  test('prefers top-level email and falls back to auth.user_id', () => {
     const token = makeJwt({
-      'https://api.openai.com/auth': { chatgpt_account_id: 'a', chatgpt_user_id: 'u', chatgpt_plan_type: 'plus' },
+      'https://api.openai.com/auth': { user_id: 'legacy-user' },
+      'https://api.openai.com/profile': { email: 'profile@example.com' },
       email: 'top-level@example.com',
     });
-    expect(parseCodexIdTokenClaims(token).email).toBe('top-level@example.com');
+    expect(parseCodexIdTokenClaims(token)).toEqual({
+      email: 'top-level@example.com',
+      chatgptUserId: 'legacy-user',
+      isFedRampAccount: false,
+    });
+  });
+
+  test('extracts the FedRAMP account flag', () => {
+    const token = makeJwt({
+      'https://api.openai.com/auth': { chatgpt_account_is_fedramp: true },
+    });
+    expect(parseCodexIdTokenClaims(token)).toEqual({ isFedRampAccount: true });
   });
 
   test('handles base64url padding-free encoding (real OpenAI tokens have no padding)', () => {

@@ -18,6 +18,7 @@ export function CodexAccountCard({ record }: { record: CodexRecord }) {
   const now = useNow(WALL_CLOCK_REFRESH_MS);
   const locale = useLocale();
   const account = record.config.accounts[0];
+  const accountId = account.chatgptAccountId;
   const lookup = findCredential(record);
   const credential = lookup.kind === 'present' ? lookup.credential : null;
   const entries = quotaEntries(record.codex_quota, now);
@@ -34,17 +35,17 @@ export function CodexAccountCard({ record }: { record: CodexRecord }) {
     <div className="flex items-start gap-3">
       <ProviderIcon kind="codex" className="h-8 w-8 shrink-0" />
       <div className="grid gap-1 min-w-0 flex-1">
-        <Text block weight="semibold" truncate wrap={false}>{account.email}</Text>
+        {account.email !== undefined && <Text block weight="semibold" truncate wrap={false}>{account.email}</Text>}
         <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge tone="accent">{account.planType}</StatusBadge>
+          {account.planType !== undefined && <StatusBadge tone="accent">{account.planType}</StatusBadge>}
           {credits?.credits_has_credits === false
             ? <StatusBadge tone="danger">{t('dashboard.upstreamEditor.codex.noCredits')}</StatusBadge>
             : credits?.credits_balance !== undefined && <Badge appearance="outline" size="large">
               {t('dashboard.upstreamEditor.codex.credits', { balance: credits.credits_balance })}
             </Badge>}
-          <TruncationTooltip content={account.chatgptAccountId} relationship="description">
-            {measureRef => <Text size={200} className="winui-focus-rect text-fui-fg3 font-mono mono-size-xs" ref={measureRef} tabIndex={0}>{shortAccountId(account.chatgptAccountId)}</Text>}
-          </TruncationTooltip>
+          {accountId !== undefined && <TruncationTooltip content={accountId} relationship="description">
+            {measureRef => <Text size={200} className="winui-focus-rect text-fui-fg3 font-mono mono-size-xs" ref={measureRef} tabIndex={0}>{shortAccountId(accountId)}</Text>}
+          </TruncationTooltip>}
         </div>
       </div>
       <StatusBadge tone={status.tone}>{statusLabel}</StatusBadge>

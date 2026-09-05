@@ -38,6 +38,14 @@ describe('codex credential lookup', () => {
       accounts: [{ chatgptAccountId: 'other', state: 'active', state_updated_at: PAST }],
     }))).toEqual({ kind: 'account-id-mismatch', expectedAccountId: ACCOUNT_ID });
   });
+
+  it('matches claim-free config and state accounts', () => {
+    const claimFreeRecord = {
+      ...record({ accounts: [{ state: 'active', state_updated_at: PAST }] }),
+      config: { accounts: [{}] },
+    } as CodexRecord;
+    expect(findCredential(claimFreeRecord).kind).toBe('present');
+  });
 });
 
 describe('codex quota entries', () => {

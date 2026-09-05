@@ -4,10 +4,11 @@ import type { UpstreamRecord } from '@floway-dev/provider';
 // import. Mutating credentials (refresh_token, access_token, credential
 // health) live in CodexUpstreamState instead.
 export interface CodexAccountIdentity {
-  email: string;
-  chatgptAccountId: string;
-  chatgptUserId: string;
-  planType: string;
+  email?: string;
+  chatgptAccountId?: string;
+  chatgptUserId?: string;
+  planType?: string;
+  isFedRampAccount?: boolean;
 }
 
 // Codex config is an account pool. v1 always carries exactly one entry —
@@ -42,8 +43,8 @@ function assertCodexUpstreamConfig(value: unknown): asserts value is CodexUpstre
   if (obj.accounts.length !== 1) {
     throw new TypeError(`CodexUpstreamConfig.accounts must hold exactly one account (got ${obj.accounts.length})`);
   }
-  const identityKeys: readonly (keyof CodexAccountIdentity)[] = ['email', 'chatgptAccountId', 'chatgptUserId', 'planType'];
-  const allowedKeys = new Set<string>(identityKeys);
+  const stringIdentityKeys: readonly (keyof CodexAccountIdentity)[] = ['email', 'chatgptAccountId', 'chatgptUserId', 'planType'];
+  const allowedKeys = new Set<string>([...stringIdentityKeys, 'isFedRampAccount']);
   for (let i = 0; i < obj.accounts.length; i++) {
     const where = `CodexUpstreamConfig.accounts[${i}]`;
     const account = obj.accounts[i];
@@ -56,11 +57,14 @@ function assertCodexUpstreamConfig(value: unknown): asserts value is CodexUpstre
         throw new TypeError(`${where} has unexpected key '${key}'`);
       }
     }
-    for (const key of identityKeys) {
+    for (const key of stringIdentityKeys) {
       const v = acc[key];
-      if (typeof v !== 'string' || v === '') {
-        throw new TypeError(`${where}.${key} must be a non-empty string`);
+      if (v !== undefined && (typeof v !== 'string' || v === '')) {
+        throw new TypeError(`${where}.${key} must be a non-empty string when present`);
       }
+    }
+    if (acc.isFedRampAccount !== undefined && typeof acc.isFedRampAccount !== 'boolean') {
+      throw new TypeError(`${where}.isFedRampAccount must be a boolean when present`);
     }
   }
 }

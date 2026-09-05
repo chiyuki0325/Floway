@@ -19,15 +19,16 @@ const buildCodexImportResult = (params: {
 }): CodexImportResult => ({
   config: {
     accounts: [{
-      email: params.identity.email,
-      chatgptAccountId: params.identity.chatgptAccountId,
-      chatgptUserId: params.identity.chatgptUserId,
-      planType: params.identity.planType,
+      ...(params.identity.email === undefined ? {} : { email: params.identity.email }),
+      ...(params.identity.chatgptAccountId === undefined ? {} : { chatgptAccountId: params.identity.chatgptAccountId }),
+      ...(params.identity.chatgptUserId === undefined ? {} : { chatgptUserId: params.identity.chatgptUserId }),
+      ...(params.identity.planType === undefined ? {} : { planType: params.identity.planType }),
+      isFedRampAccount: params.identity.isFedRampAccount,
     }],
   },
   state: {
     accounts: [{
-      chatgptAccountId: params.identity.chatgptAccountId,
+      ...(params.identity.chatgptAccountId === undefined ? {} : { chatgptAccountId: params.identity.chatgptAccountId }),
       refresh_token: params.refreshToken,
       state: 'active',
       state_updated_at: params.now,
@@ -41,8 +42,10 @@ const buildCodexImportResult = (params: {
         token: params.accessToken,
         expiresAt: params.expiresAt,
         refreshedAt: params.now,
-        planType: params.identity.planType,
-        planObservedAt: params.now,
+        ...(params.identity.planType === undefined ? {} : {
+          planType: params.identity.planType,
+          planObservedAt: params.now,
+        }),
       },
       quotaSnapshot: null,
     }],

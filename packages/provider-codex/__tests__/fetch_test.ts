@@ -326,6 +326,7 @@ describe('callCodexResponses — upstream classification', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     await callCodexResponses({
       upstreamId, account: activeAccount,
+      isFedRampAccount: true,
       model,
       body: {
         input: [],
@@ -353,6 +354,7 @@ describe('callCodexResponses — upstream classification', () => {
     const headers = new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers);
     expect(headers.get('authorization')).toBe('Bearer at_kv');
     expect(headers.get('chatgpt-account-id')).toBe('acc');
+    expect(headers.get('x-openai-fedramp')).toBe('true');
     expect(headers.get('originator')).toBe(CODEX_ORIGINATOR);
     expect(headers.get('user-agent')).toBe(CODEX_USER_AGENT);
     expect(headers.get('accept')).toBe('text/event-stream');
@@ -980,6 +982,7 @@ describe('callCodexImagesGenerations', () => {
     const result = await callCodexImagesGenerations({
       upstreamId,
       account: (currentRecord.state as CodexUpstreamState).accounts[0],
+      isFedRampAccount: true,
       model: imageModel,
       body: { prompt: 'an orange circle' },
       fallbackPlanType: 'plus',
@@ -994,6 +997,8 @@ describe('callCodexImagesGenerations', () => {
     const secondHeaders = new Headers((imageCalls[1][1] as RequestInit).headers);
     expect(firstHeaders.get('originator')).toBe('chatgpt_cca');
     expect(secondHeaders.get('originator')).toBe('chatgpt_cca');
+    expect(firstHeaders.get('x-openai-fedramp')).toBe('true');
+    expect(secondHeaders.get('x-openai-fedramp')).toBe('true');
     expect(firstHeaders.get('x-codex-image-turn-id')).toMatch(UUID_V7_RE);
     expect(secondHeaders.get('x-codex-image-turn-id')).toBe(firstHeaders.get('x-codex-image-turn-id'));
   });
@@ -1124,7 +1129,7 @@ describe('callCodexResponsesCompact', () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
     const result = await callCodexResponsesCompact({
-      upstreamId, account: activeAccount, model,
+      upstreamId, account: activeAccount, isFedRampAccount: true, model,
       body: { input: [{ type: 'message', role: 'user', content: 'hello' }] },
       headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -1135,6 +1140,7 @@ describe('callCodexResponsesCompact', () => {
     expect(url).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
     expect(new Headers(init.headers).get('accept')).toBe('application/json');
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer at_kv');
+    expect(new Headers(init.headers).get('x-openai-fedramp')).toBe('true');
 
     const body = await readJsonRequest(init) as Record<string, unknown>;
     expect(body.model).toBe('gpt-5.4');
@@ -1283,6 +1289,7 @@ describe('callCodexAlphaSearch', () => {
     const result = await callCodexAlphaSearch({
       upstreamId,
       account: activeAccount,
+      isFedRampAccount: true,
       model,
       body: { id: 'search-session', commands: { search_query: [{ q: 'Floway' }] } },
       headers: new Headers({ 'x-codex-turn-metadata': '{"turn_id":"turn-search"}' }),
@@ -1297,6 +1304,7 @@ describe('callCodexAlphaSearch', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('authorization')).toBe('Bearer at_kv');
     expect(headers.get('chatgpt-account-id')).toBe('acc');
+    expect(headers.get('x-openai-fedramp')).toBe('true');
     expect(headers.get('x-codex-turn-metadata')).toBe('{"turn_id":"turn-search"}');
     expect(await readJsonRequest(init)).toMatchObject({
       id: 'search-session',

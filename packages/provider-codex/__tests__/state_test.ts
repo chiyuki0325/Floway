@@ -6,8 +6,10 @@ const goodAccount = { chatgptAccountId: 'acc_x', refresh_token: 'rt_x', state: '
 const good: CodexUpstreamState = { accounts: [{ ...goodAccount, accessToken: null, quotaSnapshot: null }] };
 
 describe('assertCodexUpstreamState', () => {
-  test('accepts active state', () => {
+  test('accepts active state with or without an account ID claim', () => {
     expect(() => assertCodexUpstreamState(good)).not.toThrow();
+    const { chatgptAccountId: _drop, ...claimFreeAccount } = goodAccount;
+    expect(() => assertCodexUpstreamState({ accounts: [claimFreeAccount] })).not.toThrow();
   });
   test('accepts terminal states with state_message', () => {
     expect(() => assertCodexUpstreamState({

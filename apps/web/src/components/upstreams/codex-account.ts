@@ -63,7 +63,7 @@ export interface QuotaEntry {
 
 export type CredentialLookup =
   | { kind: 'present'; credential: CodexAccountCredentialState }
-  | { kind: 'account-id-mismatch'; expectedAccountId: string };
+  | { kind: 'account-id-mismatch'; expectedAccountId: string | undefined };
 
 export const findCredential = (record: CodexRecord): CredentialLookup => {
   const expectedAccountId = record.config.accounts[0].chatgptAccountId;

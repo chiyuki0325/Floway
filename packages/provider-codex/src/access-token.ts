@@ -67,7 +67,7 @@ const mergeCodexAccessTokenEntry = (
 // surfaces them rather than silently running on a stale cached token.
 const persistAccessToken = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   entry: CodexAccessTokenEntry | null,
   where: string,
   fallbackPlan?: CodexPlanObservation,
@@ -110,7 +110,7 @@ const persistAccessToken = async (
 
 export const putCodexAccessToken = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   entry: CodexAccessTokenEntry,
   fallbackPlan?: CodexPlanObservation,
 ): Promise<CodexAccessTokenEntry> =>
@@ -118,7 +118,7 @@ export const putCodexAccessToken = async (
 
 export const invalidateCodexAccessToken = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   expectedToken?: string,
 ): Promise<CodexAccessTokenEntry | null> => {
   if (expectedToken === undefined) {
@@ -177,7 +177,7 @@ type CodexAccessTokenMint = (
 
 export const ensureCodexAccessToken = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   mint: CodexAccessTokenMint,
   // When true, skip the "cached access_token is still fresh" fast-path and
   // always mint a fresh one. Dashboard's Refresh button sets this so the
@@ -199,7 +199,7 @@ export const ensureCodexAccessToken = async (
 
 const ensureCodexAccessTokenInner = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   mint: CodexAccessTokenMint,
   recoveryAllowed: boolean,
   force: boolean,
@@ -242,7 +242,7 @@ const ensureCodexAccessTokenInner = async (
 // a real session termination.
 const recoverFromRefreshRace = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   usedRefreshToken: string,
   mint: CodexAccessTokenMint,
 ): Promise<CodexAccessTokenEntry | null> => {
