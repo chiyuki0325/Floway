@@ -573,7 +573,9 @@ const upstreamSummary = (record: UpstreamRecord, t: TFunction): string => {
   case 'codex': {
     const account = record.config.accounts[0];
     if (!account) return t('dashboard.upstreams.summary.noAccount');
-    return account.email || shortAccountId(account.chatgptAccountId);
+    return account.email ?? (account.chatgptAccountId === undefined
+      ? t('dashboard.upstreams.summary.noAccount')
+      : shortAccountId(account.chatgptAccountId));
   }
   case 'claude-code': {
     const account = record.config.accounts[0];

@@ -137,7 +137,7 @@ export const hasCodexQuotaReading = (snapshot: CodexQuotaSnapshot): boolean => {
 // withholding a reading buys nothing and costs the page the only answer it has.
 export const getCodexQuota = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
 ): Promise<CodexQuotaSnapshotMap | null> => {
   const fresh = await getProviderRepo().upstreams.getById(upstreamId);
   if (!fresh) return null;
@@ -150,7 +150,7 @@ export const getCodexQuota = async (
 
 export const putCodexQuota = async (
   upstreamId: string,
-  accountId: string,
+  accountId: string | undefined,
   snapshot: CodexQuotaSnapshot,
 ): Promise<void> => {
   // Stamped before the write so a replay against a winning sibling produces

@@ -38,6 +38,9 @@ export const CODEX_ALPHA_SEARCH_PATH = '/codex/alpha/search';
 export const CODEX_RESPONSES_COMPACT_PATH = '/codex/responses/compact';
 export const CODEX_MODELS_PATH = '/codex/models';
 
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/model-provider/src/bearer_auth_provider.rs#L31-L45
+export const CODEX_FEDRAMP_HEADER = 'x-openai-fedramp';
+
 // Codex's image extension does not discover this model through /codex/models.
 // It owns the capability and sends the fixed model id to these provider-
 // relative endpoints instead.

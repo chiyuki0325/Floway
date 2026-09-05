@@ -35,7 +35,7 @@ describe('importCodexFromAuthJson', () => {
       },
     });
     const result = await importCodexFromAuthJson(authJson);
-    expect(result.config.accounts).toEqual([{ email: 'a@b.com', chatgptAccountId: 'acc', chatgptUserId: 'usr', planType: 'plus' }]);
+    expect(result.config.accounts).toEqual([{ email: 'a@b.com', chatgptAccountId: 'acc', chatgptUserId: 'usr', planType: 'plus', isFedRampAccount: false }]);
     expect(result.state.accounts[0].chatgptAccountId).toBe('acc');
     expect(result.state.accounts[0].refresh_token).toBe('rt1');
     expect(result.state.accounts[0].state).toBe('active');
@@ -66,10 +66,19 @@ describe('importCodexFromAuthJson', () => {
     await expect(importCodexFromAuthJson(JSON.stringify({ tokens: { refresh_token: 'r', id_token: makeJwt(identityPayload) } }))).rejects.toThrow(/access_token/);
   });
 
-  test('id_token must contain identity claims', async () => {
-    await expect(importCodexFromAuthJson(JSON.stringify({
-      tokens: { access_token: 'a', refresh_token: 'r', id_token: makeJwt({ /* empty */ }) },
-    }))).rejects.toThrow();
+  test('persists optional identity and FedRAMP claims', async () => {
+    const result = await importCodexFromAuthJson(JSON.stringify({
+      tokens: {
+        access_token: 'a',
+        refresh_token: 'r',
+        id_token: makeJwt({
+          'https://api.openai.com/auth': { chatgpt_account_is_fedramp: true },
+        }),
+      },
+    }));
+    expect(result.config.accounts).toEqual([{ isFedRampAccount: true }]);
+    expect(result.state.accounts[0].chatgptAccountId).toBeUndefined();
+    expect(result.state.accounts[0].accessToken?.planType).toBeUndefined();
   });
 });
 

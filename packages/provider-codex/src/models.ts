@@ -1,6 +1,7 @@
 import {
   CODEX_BACKEND_BASE,
   CODEX_CLI_VERSION,
+  CODEX_FEDRAMP_HEADER,
   CODEX_IMAGE_MODEL_ID,
   CODEX_MODELS_PATH,
   CODEX_ORIGINATOR,
@@ -29,16 +30,18 @@ export interface CodexProviderModelData {
 
 // `fetcher` is required so the catalog refresh traverses the same proxy/
 // dial chain configured for request-time traffic.
-export const fetchCodexCatalog = async (opts: { accessToken: string; accountId: string; signal?: AbortSignal; fetcher: Fetcher }): Promise<CodexRawModel[]> => {
+export const fetchCodexCatalog = async (opts: { accessToken: string; accountId?: string; isFedRampAccount?: boolean; signal?: AbortSignal; fetcher: Fetcher }): Promise<CodexRawModel[]> => {
+  const headers = new Headers({
+    authorization: `Bearer ${opts.accessToken}`,
+    originator: CODEX_ORIGINATOR,
+    'user-agent': CODEX_USER_AGENT,
+    accept: 'application/json',
+  });
+  if (opts.accountId !== undefined) headers.set('chatgpt-account-id', opts.accountId);
+  if (opts.isFedRampAccount === true) headers.set(CODEX_FEDRAMP_HEADER, 'true');
   const response = await opts.fetcher(`${CODEX_BACKEND_BASE}${CODEX_MODELS_PATH}?client_version=${CODEX_CLI_VERSION}`, {
     method: 'GET',
-    headers: {
-      authorization: `Bearer ${opts.accessToken}`,
-      'chatgpt-account-id': opts.accountId,
-      originator: CODEX_ORIGINATOR,
-      'user-agent': CODEX_USER_AGENT,
-      accept: 'application/json',
-    },
+    headers,
     signal: opts.signal,
   });
   if (!response.ok) {

@@ -35,6 +35,7 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
   // array so a future fan-out can pick a different active account per call
   // without a wire migration.
   const accountIdentity = config.accounts[0];
+  const isFedRampAccount = accountIdentity.isFedRampAccount === true;
 
   // Computed once per provider instance: only the upstream layer applies
   // (no per-model override layer). Threaded into every ProviderModel emitted
@@ -104,7 +105,12 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
         }
         throw err;
       }
-      const raw = await fetchCodexCatalog({ accessToken: access.token, accountId: accountIdentity.chatgptAccountId, fetcher });
+      const raw = await fetchCodexCatalog({
+        accessToken: access.token,
+        ...(accountIdentity.chatgptAccountId === undefined ? {} : { accountId: accountIdentity.chatgptAccountId }),
+        isFedRampAccount,
+        fetcher,
+      });
       // Surface every model the upstream returns, including ones whose
       // ChatGPT-side `visibility` is `hide` (e.g. codex-auto-review). The
       // operator's gateway is its own surface — they can dispatch to those
@@ -120,6 +126,7 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
       return await callCodexAlphaSearch({
         upstreamId: record.id,
         account,
+        isFedRampAccount,
         model,
         headers: new Headers(opts.headers),
         signal,
@@ -140,7 +147,7 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
         ctx, {}, CODEX_RESPONSES_BOUNDARY, async () => {
           const { account } = await readActiveAccount();
           const { model: _ignored, ...wireBody } = ctx.payload;
-          const backendCallBase = { upstreamId: record.id, account, model, headers: ctx.headers, signal, effects, call: opts };
+          const backendCallBase = { upstreamId: record.id, account, isFedRampAccount, model, headers: ctx.headers, signal, effects, call: opts };
           switch (ctx.action) {
           case 'compact':
             // Narrow to the compact wire shape — defends against a future
@@ -168,11 +175,11 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
     callEmbeddings: () => unsupportedCallResult(),
     callImagesGenerations: async (model, body, signal, opts) => {
       const { account } = await readActiveAccount();
-      return await callCodexImagesGenerations({ upstreamId: record.id, account, model, headers: opts.headers, signal, effects, call: opts, body, fallbackPlanType: accountIdentity.planType });
+      return await callCodexImagesGenerations({ upstreamId: record.id, account, isFedRampAccount, model, headers: opts.headers, signal, effects, call: opts, body, fallbackPlanType: accountIdentity.planType });
     },
     callImagesEdits: async (model, request, signal, opts) => {
       const { account } = await readActiveAccount();
-      return await callCodexImagesEdits({ upstreamId: record.id, account, model, headers: opts.headers, signal, effects, call: opts, request, fallbackPlanType: accountIdentity.planType });
+      return await callCodexImagesEdits({ upstreamId: record.id, account, isFedRampAccount, model, headers: opts.headers, signal, effects, call: opts, request, fallbackPlanType: accountIdentity.planType });
     },
     callAudioTranscriptions: () => unsupportedCallResult(),
     callRerank: () => Promise.reject(new Error('Codex provider does not support callRerank')),

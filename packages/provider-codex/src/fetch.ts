@@ -3,6 +3,7 @@ import { CodexOAuthSessionTerminatedError } from './auth/oauth.ts';
 import {
   CODEX_BACKEND_BASE,
   CODEX_ALPHA_SEARCH_PATH,
+  CODEX_FEDRAMP_HEADER,
   CODEX_IMAGES_EDITS_PATH,
   CODEX_IMAGES_GENERATIONS_PATH,
   CODEX_ORIGINATOR,
@@ -43,6 +44,7 @@ export interface CodexCallEffects {
 interface CodexBackendCallBase {
   upstreamId: string;
   account: CodexAccountCredential;
+  isFedRampAccount?: boolean;
   model: ProviderModel;
   headers: Headers;
   signal?: AbortSignal;
@@ -64,12 +66,12 @@ export interface CallCodexAlphaSearchOptions extends CodexBackendCallBase {
 
 export interface CallCodexImagesGenerationsOptions extends CodexBackendCallBase {
   body: Omit<ImagesGenerationsPayload, 'model'>;
-  fallbackPlanType: string;
+  fallbackPlanType: string | undefined;
 }
 
 export interface CallCodexImagesEditsOptions extends CodexBackendCallBase {
   request: ImagesEditsRequest;
-  fallbackPlanType: string;
+  fallbackPlanType: string | undefined;
 }
 
 type CodexResponsesBody = CallCodexResponsesOptions['body'] | CallCodexResponsesCompactOptions['body'];
@@ -97,8 +99,9 @@ export const callCodexAlphaSearch = async (opts: CallCodexAlphaSearchOptions): P
 export const callCodexImagesGenerations = async (opts: CallCodexImagesGenerationsOptions): Promise<ProviderCallResult> => {
   const ready = await prepareCodexCall(opts);
   if (!ready.ok) return { modelKey: opts.model.id, response: ready.response };
-  const effectivePlan = accessTokenPlan(ready.accessToken) ?? { planType: opts.fallbackPlanType };
-  if (!codexPlanSupportsImages(effectivePlan.planType)) return imageUnavailableResult(opts.model.id);
+  const effectivePlan = accessTokenPlan(ready.accessToken)
+    ?? (opts.fallbackPlanType === undefined ? undefined : { planType: opts.fallbackPlanType });
+  if (!codexPlanSupportsImages(effectivePlan?.planType)) return imageUnavailableResult(opts.model.id);
   const turnId = trimHeader(opts.headers, 'x-codex-image-turn-id') ?? uuidV7();
   return await performImageCall(opts, ready.accessToken, CODEX_IMAGES_GENERATIONS_PATH, { ...opts.body, model: opts.model.id }, turnId, effectivePlan, false);
 };
@@ -106,8 +109,9 @@ export const callCodexImagesGenerations = async (opts: CallCodexImagesGeneration
 export const callCodexImagesEdits = async (opts: CallCodexImagesEditsOptions): Promise<ProviderCallResult> => {
   const ready = await prepareCodexCall(opts);
   if (!ready.ok) return { modelKey: opts.model.id, response: ready.response };
-  const effectivePlan = accessTokenPlan(ready.accessToken) ?? { planType: opts.fallbackPlanType };
-  if (!codexPlanSupportsImages(effectivePlan.planType)) return imageUnavailableResult(opts.model.id);
+  const effectivePlan = accessTokenPlan(ready.accessToken)
+    ?? (opts.fallbackPlanType === undefined ? undefined : { planType: opts.fallbackPlanType });
+  if (!codexPlanSupportsImages(effectivePlan?.planType)) return imageUnavailableResult(opts.model.id);
   const body = await serializeOpenAIImagesEditsJsonPayload(opts.request, opts.model.id);
   const turnId = trimHeader(opts.headers, 'x-codex-image-turn-id') ?? uuidV7();
   return await performImageCall(opts, ready.accessToken, CODEX_IMAGES_EDITS_PATH, body, turnId, effectivePlan, false);
@@ -498,7 +502,8 @@ const dispatchCodexHttpCall = async (
 ): Promise<Response> => {
   const headers = new Headers();
   headers.set('authorization', `Bearer ${accessToken}`);
-  headers.set('chatgpt-account-id', opts.account.chatgptAccountId);
+  if (opts.account.chatgptAccountId !== undefined) headers.set('chatgpt-account-id', opts.account.chatgptAccountId);
+  if (opts.isFedRampAccount) headers.set(CODEX_FEDRAMP_HEADER, 'true');
   headers.set('originator', CODEX_ORIGINATOR);
   headers.set('user-agent', CODEX_USER_AGENT);
   headers.set('accept', accept);
@@ -571,13 +576,14 @@ const dispatchCodexImageCall = async (
 ): Promise<Response> => {
   const headers = new Headers({
     authorization: `Bearer ${accessToken}`,
-    'chatgpt-account-id': opts.account.chatgptAccountId,
     originator: trimHeader(opts.headers, 'originator') ?? CODEX_ORIGINATOR,
     'user-agent': CODEX_USER_AGENT,
     accept: 'application/json',
     'content-type': 'application/json',
     'x-codex-image-turn-id': turnId,
   });
+  if (opts.account.chatgptAccountId !== undefined) headers.set('chatgpt-account-id', opts.account.chatgptAccountId);
+  if (opts.isFedRampAccount) headers.set(CODEX_FEDRAMP_HEADER, 'true');
   const response = await opts.call.wrapUpstreamCall(() => opts.call.fetcher(`${CODEX_BACKEND_BASE}${path}`, {
     method: 'POST',
     headers,
@@ -736,12 +742,12 @@ const performAlphaSearchCall = async (
 };
 
 const performImageCall = async (
-  opts: CodexBackendCallBase & { fallbackPlanType: string },
+  opts: CodexBackendCallBase & { fallbackPlanType: string | undefined },
   accessToken: CodexAccessTokenEntry,
   path: string,
   body: Record<string, unknown>,
   turnId: string,
-  effectivePlan: CodexPlanObservation,
+  effectivePlan: CodexPlanObservation | undefined,
   alreadyRetried: boolean,
 ): Promise<ProviderCallResult> => {
   const response = await dispatchCodexImageCall(opts, accessToken.token, path, body, turnId);
@@ -749,7 +755,7 @@ const performImageCall = async (
     const fresh = await refreshAccessTokenForRetry(opts, accessToken, effectivePlan);
     if (!fresh.ok) return { modelKey: opts.model.id, response: fresh.response };
     const refreshedPlan = accessTokenPlan(fresh.accessToken) ?? effectivePlan;
-    if (!codexPlanSupportsImages(refreshedPlan.planType)) return imageUnavailableResult(opts.model.id);
+    if (!codexPlanSupportsImages(refreshedPlan?.planType)) return imageUnavailableResult(opts.model.id);
     return await performImageCall(opts, fresh.accessToken, path, body, turnId, refreshedPlan, true);
   }
   return { modelKey: opts.model.id, response };

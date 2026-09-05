@@ -13,15 +13,16 @@ const wrap = (config: unknown): UpstreamRecord => ({
 });
 
 describe('assertCodexUpstreamRecord (config validation)', () => {
-  test('accepts a complete config', () => {
+  test('accepts complete, legacy, and claim-free identities', () => {
     expect(() => assertCodexUpstreamRecord(wrap(good))).not.toThrow();
+    expect(() => assertCodexUpstreamRecord(wrap({ accounts: [{ ...goodAccount, isFedRampAccount: true }] }))).not.toThrow();
+    expect(() => assertCodexUpstreamRecord(wrap({ accounts: [{}] }))).not.toThrow();
   });
   test.each([
     ['email empty', { accounts: [{ ...goodAccount, email: '' }] }],
     ['email type', { accounts: [{ ...goodAccount, email: 123 }] }],
-    ['account id missing', { accounts: [{ ...goodAccount, chatgptAccountId: undefined }] }],
-    ['user id missing', { accounts: [{ ...goodAccount, chatgptUserId: '' }] }],
-    ['planType missing', { accounts: [{ ...goodAccount, planType: undefined }] }],
+    ['user id empty', { accounts: [{ ...goodAccount, chatgptUserId: '' }] }],
+    ['FedRAMP flag type', { accounts: [{ ...goodAccount, isFedRampAccount: 'true' }] }],
     ['extra unknown field on account', { accounts: [{ ...goodAccount, extra: 1 }] }],
     ['extra unknown field at top level', { ...good, extra: 1 }],
     ['accounts not an array', { accounts: goodAccount }],

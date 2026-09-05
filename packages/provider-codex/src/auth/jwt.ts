@@ -5,31 +5,30 @@
 import { decodeCanonicalBase64url } from '@floway-dev/protocols/common';
 
 export interface CodexIdTokenIdentity {
-  email: string;
-  chatgptAccountId: string;
-  chatgptUserId: string;
-  planType: string;
+  email?: string;
+  chatgptAccountId?: string;
+  chatgptUserId?: string;
+  planType?: string;
+  isFedRampAccount: boolean;
 }
 
 export const parseCodexIdTokenClaims = (idToken: string): CodexIdTokenIdentity => {
   const payload = parseCodexJwtPayload(idToken, 'id_token');
+  const profile = pickObjectOptional(payload, 'https://api.openai.com/profile');
+  const auth = pickObjectOptional(payload, 'https://api.openai.com/auth');
 
-  const auth = payload['https://api.openai.com/auth'];
-  if (!isObject(auth)) throw new Error('id_token missing https://api.openai.com/auth claim');
-
-  // Real-world OpenAI id_tokens carry `email` at the top level; the
-  // `https://api.openai.com/profile` claim is sometimes also populated. We
-  // accept either source so the import works against every observed shape.
-  const profile = payload['https://api.openai.com/profile'];
-  const email = (isObject(profile) ? pickStringOptional(profile, 'email') : null)
-    ?? pickStringOptional(payload, 'email');
-  if (email === null) throw new Error('id_token missing email claim');
-
+  const email = pickStringOptional(payload, 'email') ?? (profile ? pickStringOptional(profile, 'email') : undefined);
+  const chatgptAccountId = auth ? pickStringOptional(auth, 'chatgpt_account_id') : undefined;
+  const chatgptUserId = auth
+    ? pickStringOptional(auth, 'chatgpt_user_id') ?? pickStringOptional(auth, 'user_id')
+    : undefined;
+  const planType = auth ? pickStringOptional(auth, 'chatgpt_plan_type') : undefined;
   return {
-    email,
-    chatgptAccountId: pickString(auth, 'chatgpt_account_id'),
-    chatgptUserId: pickString(auth, 'chatgpt_user_id'),
-    planType: pickString(auth, 'chatgpt_plan_type'),
+    ...(email === undefined ? {} : { email }),
+    ...(chatgptAccountId === undefined ? {} : { chatgptAccountId }),
+    ...(chatgptUserId === undefined ? {} : { chatgptUserId }),
+    ...(planType === undefined ? {} : { planType }),
+    isFedRampAccount: auth ? pickBooleanOptional(auth, 'chatgpt_account_is_fedramp') ?? false : false,
   };
 };
 
@@ -87,14 +86,23 @@ const decodeBase64UrlToUtf8 = (value: string): string => {
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const pickString = (record: Record<string, unknown>, key: string): string => {
+const pickObjectOptional = (record: Record<string, unknown>, key: string): Record<string, unknown> | undefined => {
   const value = record[key];
-  if (typeof value !== 'string' || value === '') throw new Error(`id_token missing or empty ${key} claim`);
+  if (value === undefined || value === null) return undefined;
+  if (!isObject(value)) throw new Error(`id_token ${key} claim is not an object`);
   return value;
 };
 
-const pickStringOptional = (record: Record<string, unknown>, key: string): string | null => {
+const pickStringOptional = (record: Record<string, unknown>, key: string): string | undefined => {
   const value = record[key];
-  if (typeof value !== 'string' || value === '') return null;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new Error(`id_token has malformed ${key} claim`);
+  return value === '' ? undefined : value;
+};
+
+const pickBooleanOptional = (record: Record<string, unknown>, key: string): boolean | undefined => {
+  const value = record[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'boolean') throw new Error(`id_token has malformed ${key} claim`);
   return value;
 };

@@ -119,6 +119,32 @@ describe('createCodexProvider', () => {
     expect(fetchSpy.mock.calls[0][0]).toMatch(/\/codex\/models/);
   });
 
+  test('supports a claim-free FedRAMP account when fetching models', async () => {
+    const claimFreeRecord: UpstreamRecord = {
+      ...baseRecord,
+      config: { accounts: [{ isFedRampAccount: true }] },
+      state: {
+        accounts: [{
+          refresh_token: 'rt_v1',
+          state: 'active',
+          state_updated_at: '2026-01-01T00:00:00Z',
+          openaiDeviceId: '11111111-2222-4333-8444-555555555555',
+          accessToken: freshAccessToken,
+          quotaSnapshot: null,
+        }],
+      },
+    };
+    current = claimFreeRecord;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(modelsResponse());
+    const instance = createCodexProvider(claimFreeRecord);
+
+    await instance.instance.getProvidedModels(directFetcher);
+
+    const headers = new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers);
+    expect(headers.get('chatgpt-account-id')).toBeNull();
+    expect(headers.get('x-openai-fedramp')).toBe('true');
+  });
+
   test('getProvidedModels mints an access token when none is cached, then fetches the catalog', async () => {
     current = baseRecord;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {

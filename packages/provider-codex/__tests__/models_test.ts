@@ -19,7 +19,7 @@ describe('fetchCodexCatalog', () => {
         { slug: 'codex-auto-review', display_name: 'Codex Auto Review', visibility: 'hide', context_window: 272000, max_context_window: 1000000 },
       ],
     }));
-    const catalog = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher });
+    const catalog = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', isFedRampAccount: true, fetcher: directFetcher });
     expect(catalog).toHaveLength(3);
     expect(catalog[0]).toEqual({ id: 'gpt-5.4', display_name: 'GPT-5.4', context_window: 272000 });
     expect(catalog[2]).toEqual({ id: 'codex-auto-review', display_name: 'Codex Auto Review', context_window: 272000 });
@@ -29,6 +29,7 @@ describe('fetchCodexCatalog', () => {
     const headers = new Headers((init as RequestInit | undefined)?.headers);
     expect(headers.get('authorization')).toBe('Bearer at');
     expect(headers.get('chatgpt-account-id')).toBe('acc');
+    expect(headers.get('x-openai-fedramp')).toBe('true');
     expect(headers.get('originator')).toBe(CODEX_ORIGINATOR);
     expect(headers.get('user-agent')).toBe(CODEX_USER_AGENT);
     expect(headers.get('user-agent')).toBe(`codex_cli_rs/${CODEX_CLI_VERSION} (Mac OS 26.5.0; arm64) iTerm.app/3.6.10`);
