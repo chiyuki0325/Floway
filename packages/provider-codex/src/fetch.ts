@@ -492,7 +492,7 @@ const buildCodexOpenAIResponsesBody = (
   const body = codexModelUsesResponsesLite(opts.model)
     ? projectResponsesLiteBody(source, identity)
     : source;
-  if (body.prompt_cache_key === undefined) body.prompt_cache_key = identity.threadId;
+  if (body.prompt_cache_key === undefined) body.prompt_cache_key = identity.sessionId;
   return body;
 };
 
