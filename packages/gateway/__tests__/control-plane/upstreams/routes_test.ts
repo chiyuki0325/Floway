@@ -826,7 +826,7 @@ const fakeIdToken = (claims: Record<string, unknown>): string => {
 const codexAuthJsonImport = (overrides: Record<string, unknown> = {}) => ({
   auth_json: JSON.stringify({
     tokens: {
-      access_token: 'at_test',
+      access_token: fakeIdToken({ exp: 4_102_444_800 }),
       refresh_token: 'rt_test',
       id_token: fakeIdToken({}),
     },

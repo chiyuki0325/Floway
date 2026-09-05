@@ -112,21 +112,27 @@ export const codexOAuthRefresh = async (c: CtxWithJson<typeof codexOAuthRefreshB
   // holding a dead credential that no later request can distinguish from a
   // revoked one. The repo re-applies this against whichever concurrent write
   // won and throws if it cannot.
-  const persistRefreshTokenRotation = async (newRefreshToken: string): Promise<void> => {
+  const persistRefreshTokenRotation = async (newRefreshToken: string, expectedRefreshToken: string): Promise<void> => {
     const rotatedAt = new Date().toISOString();
     await getRepo().upstreams.saveState(record.id, current => {
       assertCodexUpstreamState(current);
       return {
-        accounts: current.accounts.map(a => a.chatgptAccountId === account.chatgptAccountId
-          ? { ...a, refresh_token: newRefreshToken, state_updated_at: rotatedAt }
-          : a),
+        accounts: current.accounts.map(a => {
+          if (a.chatgptAccountId !== account.chatgptAccountId || a.refresh_token !== expectedRefreshToken) return a;
+          const { state_message: _stateMessage, ...rest } = a;
+          return { ...rest, refresh_token: newRefreshToken, state: 'active' as const, state_updated_at: rotatedAt };
+        }),
       } satisfies CodexUpstreamState;
     });
   };
 
+  let expectedRefreshToken = account.refresh_token;
   try {
     await ensureCodexAccessToken(record.id, account.chatgptAccountId,
-      (refreshToken, previousAccessToken) => mintCodexAccessToken(refreshToken, previousAccessToken, fetcher, persistRefreshTokenRotation),
+      (refreshToken, previousAccessToken) => {
+        expectedRefreshToken = refreshToken;
+        return mintCodexAccessToken(refreshToken, previousAccessToken, fetcher, persistRefreshTokenRotation);
+      },
       true);
   } catch (err) {
     if (err instanceof CodexOAuthSessionTerminatedError) {
@@ -137,7 +143,7 @@ export const codexOAuthRefresh = async (c: CtxWithJson<typeof codexOAuthRefreshB
       await getRepo().upstreams.saveState(record.id, current => {
         assertCodexUpstreamState(current);
         return {
-          accounts: current.accounts.map(a => a.chatgptAccountId === account.chatgptAccountId
+          accounts: current.accounts.map(a => a.chatgptAccountId === account.chatgptAccountId && a.refresh_token === expectedRefreshToken
             ? { ...a, state: 'refresh_failed' as const, state_message: err.upstreamMessage, state_updated_at: failedAt, accessToken: null }
             : a),
         } satisfies CodexUpstreamState;

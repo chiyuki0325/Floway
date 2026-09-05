@@ -209,12 +209,13 @@ export const putCodexQuota = async (
     const state = readCodexUpstreamState(current);
     const idx = findCodexAccountIndex(state, accountId);
     if (idx < 0) throw new Error(`putCodexQuota: Codex account ${accountId} not found in upstream ${upstreamId}`);
-    return replaceCodexAccount(state, idx, account => ({
-      ...account,
-      quotaSnapshot: {
-        ...account.quotaSnapshot ?? {},
-        ...Object.fromEntries(entries.map(([key, data]) => [key, { fetchedAt, data }])),
-      },
-    }));
+    return replaceCodexAccount(state, idx, account => {
+      const currentSnapshots = account.quotaSnapshot ?? {};
+      const replacements = Object.fromEntries(entries
+        .filter(([key]) => (currentSnapshots[key]?.fetchedAt ?? Number.NEGATIVE_INFINITY) < fetchedAt)
+        .map(([key, data]) => [key, { fetchedAt, data }]));
+      if (Object.keys(replacements).length === 0) return account;
+      return { ...account, quotaSnapshot: { ...currentSnapshots, ...replacements } };
+    });
   });
 };

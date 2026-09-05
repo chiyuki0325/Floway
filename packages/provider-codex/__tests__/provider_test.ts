@@ -236,6 +236,65 @@ describe('createCodexProvider', () => {
     });
     const instance = createCodexProvider(baseRecord);
     await expect(instance.instance.getProvidedModels(directFetcher)).rejects.toThrow(/Codex OAuth session terminated/);
+    expect((current!.state as CodexUpstreamState).accounts[0].state).toBe('refresh_failed');
+  });
+
+  test('a successful rotation clears a racing refresh_failed state for the same generation', async () => {
+    const instance = createCodexProvider(baseRecord);
+    current = {
+      ...baseRecord,
+      state: {
+        accounts: [{
+          ...(baseRecord.state as CodexUpstreamState).accounts[0],
+          state: 'refresh_failed',
+          state_message: 'racing failure',
+        }],
+      },
+    };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.includes('/oauth/token')) return oauthTokenResponse();
+      if (url.includes('/codex/models')) return modelsResponse();
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    await instance.instance.getProvidedModels(directFetcher);
+
+    const account = (current!.state as CodexUpstreamState).accounts[0];
+    expect(account.refresh_token).toBe('rt_v2');
+    expect(account.state).toBe('active');
+    expect(account.state_message).toBeUndefined();
+  });
+
+  test('does not apply a terminal refresh result to a newer refresh-token generation', async () => {
+    current = baseRecord;
+    const stale = current;
+    repo.getById
+      .mockImplementationOnce(async () => stale)
+      .mockImplementationOnce(async () => {
+        current = {
+          ...baseRecord,
+          state: {
+            accounts: [{
+              ...(baseRecord.state as CodexUpstreamState).accounts[0],
+              refresh_token: 'rt_v2',
+              accessToken: freshAccessToken,
+            }],
+          },
+        };
+        return stale;
+      });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ error: 'invalid_grant' }),
+      { status: 400, headers: new Headers({ 'content-type': 'application/json' }) },
+    ));
+
+    await expect(createCodexProvider(baseRecord).instance.getProvidedModels(directFetcher)).rejects.toThrow(/session terminated/);
+
+    const account = (current!.state as CodexUpstreamState).accounts[0];
+    expect(account.refresh_token).toBe('rt_v2');
+    expect(account.state).toBe('active');
+    expect(account.accessToken).toEqual(freshAccessToken);
   });
 
   test('getProvidedModels resolves operator flag overrides into every ProviderModel', async () => {
