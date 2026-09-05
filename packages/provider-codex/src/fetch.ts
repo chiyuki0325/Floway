@@ -251,6 +251,12 @@ const IDENTITY_MIRRORED_CLIENT_METADATA_KEYS = new Set<string>([
   'x-codex-installation-id', 'session_id', 'thread_id', 'x-codex-window-id', 'turn_id', 'x-codex-turn-metadata',
 ]);
 
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/responses_metadata.rs#L303-L340
+const CODEX_CLIENT_METADATA_PROJECTION_KEYS = new Set<string>([
+  ...IDENTITY_MIRRORED_CLIENT_METADATA_KEYS,
+  'parent_turn_id', 'root_turn_id', 'x-codex-parent-thread-id', 'x-openai-subagent',
+]);
+
 const buildCodexRequestIdentity = (
   opts: CodexBackendCallBase,
   body: CodexResponsesBody,
@@ -258,20 +264,17 @@ const buildCodexRequestIdentity = (
   clientTurnMetadata: Record<string, unknown> | null,
   fallbackContextWindowId: string,
 ): CodexRequestIdentity => {
-  // Identity priority for every mirrored id follows the same per-turn rule as
-  // `callerTurnMetadata`: caller body `client_metadata` key → parsed
-  // `x-codex-turn-metadata` key → caller-supplied header → gateway default. So
-  // a caller can split its identity across surfaces and we still emit
-  // consistent values everywhere, and a long-lived socket's frozen handshake
-  // headers never outrank the current turn's body.
-  const sessionId = stringField(clientMetadata, 'session_id')
-    ?? stringField(clientTurnMetadata, 'session_id')
+  // The canonical body blob outranks its flat compatibility projection, then
+  // request headers, then Floway fallbacks. A long-lived socket's frozen
+  // handshake headers therefore never outrank the current turn's body.
+  const sessionId = stringField(clientTurnMetadata, 'session_id')
+    ?? stringField(clientMetadata, 'session_id')
     ?? trimHeader(opts.headers, 'session-id')
     ?? trimHeader(opts.headers, 'session_id')
     ?? deriveSessionIdFromInput(body)
     ?? uuidV7();
-  const threadId = stringField(clientMetadata, 'thread_id')
-    ?? stringField(clientTurnMetadata, 'thread_id')
+  const threadId = stringField(clientTurnMetadata, 'thread_id')
+    ?? stringField(clientMetadata, 'thread_id')
     ?? trimHeader(opts.headers, 'thread-id')
     ?? sessionId;
   // Codex has no `client_metadata` counterpart for this one — both transports
@@ -280,21 +283,21 @@ const buildCodexRequestIdentity = (
   // https://github.com/openai/codex/blob/a16863f8704831d13e041ed7dba2c4a57a2a940b/codex-rs/codex-api/src/endpoint/responses.rs#L87-L91
   // https://github.com/openai/codex/blob/a16863f8704831d13e041ed7dba2c4a57a2a940b/codex-rs/core/src/client.rs#L1134-L1136
   const clientRequestId = trimHeader(opts.headers, 'x-client-request-id') ?? threadId;
-  const installationId = stringField(clientMetadata, 'x-codex-installation-id')
-    ?? stringField(clientTurnMetadata, 'installation_id')
+  const installationId = stringField(clientTurnMetadata, 'installation_id')
+    ?? stringField(clientMetadata, 'x-codex-installation-id')
     ?? opts.account.openaiDeviceId;
   // Codex keeps the compatibility window id as `{thread_id}:{window_number}`
   // and carries the UUIDv7 context-window identity as a separate canonical
   // metadata field.
   // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/session/mod.rs#L4152-L4165
   const windowNumber = nonNegativeIntegerField(clientTurnMetadata, 'window_number') ?? 0;
-  const windowId = stringField(clientMetadata, 'x-codex-window-id')
-    ?? stringField(clientTurnMetadata, 'window_id')
+  const windowId = stringField(clientTurnMetadata, 'window_id')
+    ?? stringField(clientMetadata, 'x-codex-window-id')
     ?? trimHeader(opts.headers, 'x-codex-window-id')
     ?? `${threadId}:${windowNumber}`;
   const contextWindowId = stringField(clientTurnMetadata, 'context_window_id') ?? fallbackContextWindowId;
-  const turnId = stringField(clientMetadata, 'turn_id')
-    ?? stringField(clientTurnMetadata, 'turn_id')
+  const turnId = stringField(clientTurnMetadata, 'turn_id')
+    ?? stringField(clientMetadata, 'turn_id')
     ?? uuidV7();
   return { installationId, sessionId, threadId, clientRequestId, turnId, windowId, windowNumber, contextWindowId };
 };
@@ -381,14 +384,32 @@ const buildCodexTurnMetadataJson = (
   };
 };
 
-const buildCodexClientMetadata = (identity: CodexRequestIdentity, turnMetadataJson: string): Record<string, string> => ({
-  'x-codex-installation-id': identity.installationId,
-  session_id: identity.sessionId,
-  thread_id: identity.threadId,
-  'x-codex-window-id': identity.windowId,
-  turn_id: identity.turnId,
-  'x-codex-turn-metadata': turnMetadataJson,
-});
+const buildCodexClientMetadata = (
+  identity: CodexRequestIdentity,
+  turnMetadataJson: string,
+  canonical: Record<string, unknown> | null,
+  flat: Record<string, unknown>,
+): Record<string, string> => {
+  const projected: Record<string, string> = {
+    'x-codex-installation-id': identity.installationId,
+    session_id: identity.sessionId,
+    thread_id: identity.threadId,
+    'x-codex-window-id': identity.windowId,
+    turn_id: identity.turnId,
+    'x-codex-turn-metadata': turnMetadataJson,
+  };
+  for (const [canonicalKey, flatKey] of [
+    ['parent_thread_id', 'x-codex-parent-thread-id'],
+    ['parent_turn_id', 'parent_turn_id'],
+    ['root_turn_id', 'root_turn_id'],
+  ] as const) {
+    const value = stringField(canonical, canonicalKey) ?? stringField(flat, flatKey);
+    if (value !== null) projected[flatKey] = value;
+  }
+  const subagent = stringField(flat, 'x-openai-subagent');
+  if (subagent !== null) projected['x-openai-subagent'] = subagent;
+  return projected;
+};
 
 // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/tools/src/tool_spec.rs#L95-L142
 const responsesLiteTools = (tools: readonly ResponsesTool[]): ResponsesTool[] => {
@@ -474,20 +495,18 @@ const buildCodexResponsesBody = (
   opts: CallCodexResponsesOptions,
   identity: CodexRequestIdentity,
   turnMetadataJson: string,
+  clientTurnMetadata: Record<string, unknown> | null,
 ): Record<string, unknown> => {
   const callerExtras: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(clientCodexClientMetadata(opts.body))) {
-    if (!IDENTITY_MIRRORED_CLIENT_METADATA_KEYS.has(k)) callerExtras[k] = v;
+    if (CODEX_CLIENT_METADATA_PROJECTION_KEYS.has(k) && !IDENTITY_MIRRORED_CLIENT_METADATA_KEYS.has(k)) callerExtras[k] = v;
   }
   const source: Record<string, unknown> = {
     ...(opts.body as unknown as Record<string, unknown>),
     model: opts.model.id,
     store: false,
     stream: true,
-    client_metadata: {
-      ...buildCodexClientMetadata(identity, turnMetadataJson),
-      ...callerExtras,
-    },
+    client_metadata: buildCodexClientMetadata(identity, turnMetadataJson, clientTurnMetadata, callerExtras),
   };
   const body = codexModelUsesResponsesLite(opts.model)
     ? projectResponsesLiteBody(source, identity)
@@ -669,7 +688,7 @@ const performStreamingResponsesCall = async (
     accessToken.token,
     CODEX_RESPONSES_PATH,
     'text/event-stream',
-    buildCodexResponsesBody(opts, identity, turnMetadataJson.body),
+    buildCodexResponsesBody(opts, identity, turnMetadataJson.body, clientTurnMetadata),
     identity,
     turnMetadataJson.header,
   ).then(ensureSseContentType);

@@ -734,7 +734,7 @@ describe('callCodexResponses — upstream classification', () => {
     expect((body.client_metadata as Record<string, unknown>).turn_id).toBe('caller-turn');
   });
 
-  test('reads the turn-metadata blob from the body before the header', async () => {
+  test('uses canonical body metadata before flat body and header projections', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     await callCodexResponses({
@@ -742,10 +742,19 @@ describe('callCodexResponses — upstream classification', () => {
       body: {
         input: [], stream: true,
         client_metadata: {
-          session_id: 'body-session',
-          'x-codex-window-id': 'thread-1:2',
+          'x-codex-installation-id': 'flat-installation',
+          session_id: 'flat-session',
+          thread_id: 'flat-thread',
+          turn_id: 'flat-turn',
+          root_turn_id: 'flat-root-turn',
+          'x-codex-window-id': 'flat-thread:7',
           'x-codex-turn-metadata': JSON.stringify({
-            window_id: 'thread-1:2',
+            installation_id: 'canonical-installation',
+            session_id: 'canonical-session',
+            thread_id: 'canonical-thread',
+            turn_id: 'canonical-turn',
+            root_turn_id: 'canonical-root-turn',
+            window_id: 'canonical-thread:2',
             window_number: 2,
             context_window_id: '019cba13-7d2c-75e2-bf79-c970d7bdfe42',
             request_kind: 'compaction',
@@ -776,13 +785,18 @@ describe('callCodexResponses — upstream classification', () => {
     expect(turnMetadata.request_kind).toBe('compaction');
     expect(turnMetadata.compaction).toEqual({ trigger: 'auto', reason: 'context_limit' });
     expect(turnMetadata.turn_started_at_unix_ms).toBe(1700000000002);
-    expect(turnMetadata.session_id).toBe('body-session');
+    expect(turnMetadata.installation_id).toBe('canonical-installation');
+    expect(turnMetadata.session_id).toBe('canonical-session');
+    expect(turnMetadata.thread_id).toBe('canonical-thread');
+    expect(turnMetadata.turn_id).toBe('canonical-turn');
     // The window advances on every auto-compaction and the advanced value
     // reaches us in the body alone.
-    expect(turnMetadata.window_id).toBe('thread-1:2');
+    expect(turnMetadata.window_id).toBe('canonical-thread:2');
     expect(turnMetadata.window_number).toBe(2);
     expect(turnMetadata.context_window_id).toBe('019cba13-7d2c-75e2-bf79-c970d7bdfe42');
-    expect(headers.get('x-codex-window-id')).toBe('thread-1:2');
+    expect(headers.get('x-codex-window-id')).toBe('canonical-thread:2');
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    expect((body.client_metadata as Record<string, unknown>).root_turn_id).toBe('canonical-root-turn');
   });
 
   test('keeps the unbounded tool inventory in the body blob and out of the header blob', async () => {
@@ -815,14 +829,14 @@ describe('callCodexResponses — upstream classification', () => {
     expect(bodyMetadata.thread_source).toBe('user');
   });
 
-  test('preserves caller client_metadata extras while keeping identity-mirror keys gateway-owned', async () => {
+  test('keeps only current flat client_metadata projections', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: {
         input: [], stream: true,
-        client_metadata: { 'x-extra-key': 'caller-supplied', session_id: '   ' },
+        client_metadata: { 'x-extra-key': 'caller-supplied', root_turn_id: 'root-turn', session_id: '   ' },
       } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers({ 'session-id': 'header-session' }),
       effects: makeEffects(),
@@ -831,8 +845,8 @@ describe('callCodexResponses — upstream classification', () => {
 
     const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
     const clientMetadata = body.client_metadata as Record<string, unknown>;
-    // Non-identity extras pass through verbatim.
-    expect(clientMetadata['x-extra-key']).toBe('caller-supplied');
+    expect(clientMetadata.root_turn_id).toBe('root-turn');
+    expect(clientMetadata['x-extra-key']).toBeUndefined();
     // A mirrored key identity could not absorb — a blank `session_id` resolves
     // to nothing, so identity falls back to the header — still comes from
     // identity instead of being spread over it.
