@@ -2,13 +2,12 @@ import { ensureCodexAccessToken, mintCodexAccessToken } from './access-token.ts'
 import { CodexOAuthSessionTerminatedError } from './auth/oauth.ts';
 import { assertCodexUpstreamRecord, type CodexUpstreamConfig } from './config.ts';
 import { CODEX_DEFAULT_FLAGS } from './defaults.ts';
-import { callCodexAlphaSearch, callCodexOpenAIImagesEdits, callCodexOpenAIImagesGenerations, callCodexOpenAIResponses, callCodexOpenAIResponsesCompact, type CodexCallEffects } from './fetch.ts';
-import { CODEX_OPENAI_RESPONSES_BOUNDARY } from './interceptors/openai-responses/index.ts';
-import type { OpenAIResponsesBoundaryCtx } from './interceptors/openai-responses/types.ts';
+import { callCodexAlphaSearch, callCodexImagesEdits, callCodexImagesGenerations, callCodexOpenAIResponses, callCodexOpenAIResponsesCompact, type CodexCallEffects } from './fetch.ts';
+import { CODEX_OPENAI_RESPONSES_BOUNDARY } from './interceptors/responses/index.ts';
+import type { OpenAIResponsesBoundaryCtx } from './interceptors/responses/types.ts';
 import { codexImageProviderModel, codexPlanSupportsImages, codexRawToProviderModel, fetchCodexCatalog } from './models.ts';
 import { assertCodexUpstreamState, findCodexAccountIndex, replaceCodexAccount } from './state.ts';
 import { runInterceptors } from '@floway-dev/interceptor';
-import { toCompactPayloadShape } from '@floway-dev/protocols/openai-responses';
 import { getProviderRepo, resolveEffectiveFlags, type ProviderInstance, type Provider, type ProviderCallResult, type ProviderOpenAIResponsesResult, type ProviderStreamResult, type UpstreamRecord } from '@floway-dev/provider';
 
 // https://github.com/openai/codex/blob/c607da9f371bb66a41cc772c6ddf1989d28137d3/codex-rs/codex-api/src/requests/headers.rs#L5-L12
@@ -150,38 +149,34 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
           const backendCallBase = { upstreamId: record.id, account, isFedRampAccount, model, headers: ctx.headers, signal, effects, call: opts };
           switch (ctx.action) {
           case 'compact':
-            // Narrow to the compact wire shape — defends against a future
-            // interceptor that flips `ctx.action` from 'generate' to 'compact'
-            // mid-chain and leaves the generate-shaped body (tools, reasoning,
-            // etc.) in place.
-            return { action: 'compact', ...(await callCodexOpenAIResponsesCompact({ ...backendCallBase, body: toCompactPayloadShape(wireBody) })) };
+            return { action: 'compact', ...(await callCodexOpenAIResponsesCompact({ ...backendCallBase, body: wireBody })) };
           case 'generate':
             return { action: 'generate', ...(await callCodexOpenAIResponses({ ...backendCallBase, body: wireBody })) };
           default:
             ctx.action satisfies never;
-            throw new Error(`Unhandled OpenAIResponsesAction: ${ctx.action as string}`);
+            throw new Error(`Unhandled ResponsesAction: ${ctx.action as string}`);
           }
         },
       );
     },
 
-    // Codex exposes OpenAI Responses and its provider-owned image endpoints. The
+    // Codex exposes Responses and its provider-owned image endpoints. The
     // remaining surfaces are unreachable through the advertised catalog, but
     // a stray dispatch must still surface as a structured 405.
-    callAnthropicMessages: () => unsupportedStreamResult(),
-    callAnthropicMessagesCountTokens: () => unsupportedCallResult(),
-    callOpenAICompletions: () => unsupportedCallResult(),
-    callOpenAIChatCompletions: () => unsupportedStreamResult(),
-    callOpenAIEmbeddings: () => unsupportedCallResult(),
-    callOpenAIImagesGenerations: async (model, body, signal, opts) => {
+    callMessages: () => unsupportedStreamResult(),
+    callMessagesCountTokens: () => unsupportedCallResult(),
+    callCompletions: () => unsupportedCallResult(),
+    callChatCompletions: () => unsupportedStreamResult(),
+    callEmbeddings: () => unsupportedCallResult(),
+    callImagesGenerations: async (model, body, signal, opts) => {
       const { account } = await readActiveAccount();
-      return await callCodexOpenAIImagesGenerations({ upstreamId: record.id, account, isFedRampAccount, model, headers: opts.headers, signal, effects, call: opts, body, fallbackPlanType: accountIdentity.planType });
+      return await callCodexImagesGenerations({ upstreamId: record.id, account, isFedRampAccount, model, headers: opts.headers, signal, effects, call: opts, body, fallbackPlanType: accountIdentity.planType });
     },
-    callOpenAIImagesEdits: async (model, request, signal, opts) => {
+    callImagesEdits: async (model, request, signal, opts) => {
       const { account } = await readActiveAccount();
-      return await callCodexOpenAIImagesEdits({ upstreamId: record.id, account, isFedRampAccount, model, headers: opts.headers, signal, effects, call: opts, request, fallbackPlanType: accountIdentity.planType });
+      return await callCodexImagesEdits({ upstreamId: record.id, account, isFedRampAccount, model, headers: opts.headers, signal, effects, call: opts, request, fallbackPlanType: accountIdentity.planType });
     },
-    callOpenAIAudioTranscriptions: () => unsupportedCallResult(),
+    callAudioTranscriptions: () => unsupportedCallResult(),
     callRerank: () => Promise.reject(new Error('Codex provider does not support callRerank')),
   };
 
