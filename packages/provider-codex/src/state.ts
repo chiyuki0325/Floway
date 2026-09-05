@@ -167,7 +167,7 @@ const assertCodexQuotaSnapshotEntryMap = (value: unknown, where: string): void =
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
     if (isUnsafeMapKey(key)) {
-      throw new TypeError(`${where} has invalid active limit key '${key}'`);
+      throw new TypeError(`${where} has invalid limit family key '${key}'`);
     }
     assertCodexQuotaSnapshotEntry(obj[key], `${where}.${key}`);
   }

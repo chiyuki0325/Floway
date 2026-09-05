@@ -156,8 +156,9 @@ const codexSignals = (record: Extract<UpstreamRecord, { kind: 'codex' }>, t: TFu
   // zero or as having no credits at all -- and Codex's own status line drops any
   // balance at or below zero. The editor card keeps both, as it keeps a charge
   // of nothing.
-  const balance = credits?.credits_has_credits === false ? 0 : credits?.credits_balance;
-  if (balance !== undefined && Number.isFinite(balance) && balance > 0) {
+  const balance = credits?.credits_has_credits === false ? undefined : credits?.credits_balance;
+  const numericBalance = balance === undefined ? undefined : Number(balance);
+  if (balance !== undefined && numericBalance !== undefined && Number.isFinite(numericBalance) && numericBalance > 0) {
     signals.push({
       key: 'credits',
       percent: null,

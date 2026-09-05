@@ -186,12 +186,13 @@ describe('upstream readout by provider', () => {
       codex_quota: { plus: { observed_at: OBSERVED, ...credits } },
     }).signals.map(signal => signal.value);
 
-    expect(withCredits({ credits_has_credits: true, credits_balance: 42 })).toEqual(['42 credits']);
+    expect(withCredits({ credits_has_credits: true, credits_balance: '42' })).toEqual(['42 credits']);
+    expect(withCredits({ credits_has_credits: true, credits_balance: '9007199254740993.000000001' })).toEqual(['9007199254740993.000000001 credits']);
     // A balance of nothing says nothing on this line, however the account
     // reports it -- the editor card is where both still show.
-    expect(withCredits({ credits_has_credits: true, credits_balance: 0 })).toEqual([]);
+    expect(withCredits({ credits_has_credits: true, credits_balance: '0' })).toEqual([]);
     expect(withCredits({ credits_has_credits: false })).toEqual([]);
-    expect(withCredits({ credits_has_credits: false, credits_balance: 12 })).toEqual([]);
+    expect(withCredits({ credits_has_credits: false, credits_balance: '12' })).toEqual([]);
     expect(withCredits({})).toEqual([]);
   });
 
