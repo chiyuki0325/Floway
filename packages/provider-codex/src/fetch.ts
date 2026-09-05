@@ -79,13 +79,13 @@ type CodexResponsesBody = CallCodexResponsesOptions['body'] | CallCodexResponses
 export const callCodexResponses = async (opts: CallCodexResponsesOptions): Promise<ProviderStreamResult<ResponsesStreamEvent>> => {
   const ready = await prepareCodexCall(opts);
   if (!ready.ok) return { ok: false, modelKey: opts.model.id, response: ready.response };
-  return await performStreamingResponsesCall(opts, ready.accessToken, false);
+  return await performStreamingResponsesCall(opts, ready.accessToken, false, prepareStreamingResponsesCall(opts));
 };
 
 export const callCodexResponsesCompact = async (opts: CallCodexResponsesCompactOptions): Promise<ProviderCompactionResult> => {
   const ready = await prepareCodexCall(opts);
   if (!ready.ok) return { ok: false, modelKey: opts.model.id, response: ready.response };
-  return await performUnaryCompactCall(opts, ready.accessToken, false);
+  return await performUnaryCompactCall(opts, ready.accessToken, false, prepareUnaryCompactCall(opts));
 };
 
 export const callCodexAlphaSearch = async (opts: CallCodexAlphaSearchOptions): Promise<ProviderCallResult> => {
@@ -714,25 +714,54 @@ const mergeRetryPlan = (
   };
 };
 
+interface PreparedCodexHttpCall {
+  identity: CodexRequestIdentity;
+  body: Record<string, unknown>;
+  turnMetadataHeader: string;
+}
+
+const prepareStreamingResponsesCall = (opts: CallCodexResponsesOptions): PreparedCodexHttpCall => {
+  const clientMetadata = clientCodexClientMetadata(opts.body);
+  const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
+  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, uuidV7());
+  const metadata: CodexTurnMetadataOptions = opts.body.input.some(item => item.type === 'compaction_trigger')
+    ? CODEX_RESPONSES_COMPACTION_V2_TURN_METADATA
+    : { requestKind: 'turn' };
+  const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
+  return {
+    identity,
+    body: buildCodexResponsesBody(opts, identity, turnMetadataJson.body, clientTurnMetadata),
+    turnMetadataHeader: turnMetadataJson.header,
+  };
+};
+
+const prepareUnaryCompactCall = (opts: CallCodexResponsesCompactOptions): PreparedCodexHttpCall => {
+  const clientMetadata = clientCodexClientMetadata(opts.body);
+  const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
+  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, uuidV7());
+  const turnMetadataJson = buildCodexTurnMetadataJson(identity, { requestKind: 'compaction' }, clientTurnMetadata);
+  const source = { ...opts.body, model: opts.model.id } as Record<string, unknown>;
+  return {
+    identity,
+    body: codexModelUsesResponsesLite(opts.model) ? projectResponsesLiteBody(source, identity) : source,
+    turnMetadataHeader: turnMetadataJson.header,
+  };
+};
+
 const performStreamingResponsesCall = async (
   opts: CallCodexResponsesOptions,
   accessToken: CodexAccessTokenEntry,
   alreadyRetried: boolean,
-  fallbackContextWindowId = uuidV7(),
+  prepared: PreparedCodexHttpCall,
 ): Promise<ProviderStreamResult<ResponsesStreamEvent>> => {
-  const clientMetadata = clientCodexClientMetadata(opts.body);
-  const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
-  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, fallbackContextWindowId);
-  const metadata: CodexTurnMetadataOptions = opts.body.input.some(item => item.type === 'compaction_trigger') ? CODEX_RESPONSES_COMPACTION_V2_TURN_METADATA : { requestKind: 'turn' };
-  const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
   const upstreamFetch = dispatchCodexHttpCall(
     opts,
     accessToken.token,
     CODEX_RESPONSES_PATH,
     'text/event-stream',
-    buildCodexResponsesBody(opts, identity, turnMetadataJson.body, clientTurnMetadata),
-    identity,
-    turnMetadataJson.header,
+    prepared.body,
+    prepared.identity,
+    prepared.turnMetadataHeader,
   ).then(ensureSseContentType);
 
   const result = await streamingProviderCall(upstreamFetch, parseResponsesStream, opts.model.id, opts.signal);
@@ -740,7 +769,7 @@ const performStreamingResponsesCall = async (
   if (!result.ok && result.response.status === 401 && !alreadyRetried) {
     const fresh = await refreshAccessTokenForRetry(opts, accessToken);
     if (!fresh.ok) return { ok: false, modelKey: opts.model.id, response: fresh.response };
-    return await performStreamingResponsesCall(opts, fresh.accessToken, true, fallbackContextWindowId);
+    return await performStreamingResponsesCall(opts, fresh.accessToken, true, prepared);
   }
 
   return result;
@@ -750,31 +779,22 @@ const performUnaryCompactCall = async (
   opts: CallCodexResponsesCompactOptions,
   accessToken: CodexAccessTokenEntry,
   alreadyRetried: boolean,
-  fallbackContextWindowId = uuidV7(),
+  prepared: PreparedCodexHttpCall,
 ): Promise<ProviderCompactionResult> => {
-  const clientMetadata = clientCodexClientMetadata(opts.body);
-  const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
-  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, fallbackContextWindowId);
-  const metadata: CodexTurnMetadataOptions = { requestKind: 'compaction' };
-  const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
-  const source = { ...opts.body, model: opts.model.id } as Record<string, unknown>;
-  const body = codexModelUsesResponsesLite(opts.model)
-    ? projectResponsesLiteBody(source, identity)
-    : source;
   const response = await dispatchCodexHttpCall(
     opts,
     accessToken.token,
     CODEX_RESPONSES_COMPACT_PATH,
     'application/json',
-    body,
-    identity,
-    turnMetadataJson.header,
+    prepared.body,
+    prepared.identity,
+    prepared.turnMetadataHeader,
   );
 
   if (response.status === 401 && !alreadyRetried) {
     const fresh = await refreshAccessTokenForRetry(opts, accessToken);
     if (!fresh.ok) return { ok: false, modelKey: opts.model.id, response: fresh.response };
-    return await performUnaryCompactCall(opts, fresh.accessToken, true, fallbackContextWindowId);
+    return await performUnaryCompactCall(opts, fresh.accessToken, true, prepared);
   }
 
   if (!response.ok) return { ok: false, modelKey: opts.model.id, response };

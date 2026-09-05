@@ -956,7 +956,10 @@ describe('callCodexResponses — upstream classification', () => {
     expect(retryMetadata.window_number).toBe(0);
     expect(firstMetadata.context_window_id).toMatch(UUID_V7_RE);
     expect(retryMetadata.context_window_id).toBe(firstMetadata.context_window_id);
-    expect(retryMetadata.turn_id).not.toBe(firstMetadata.turn_id);
+    expect(retryMetadata.turn_id).toBe(firstMetadata.turn_id);
+    expect(await readJsonRequest(fetchSpy.mock.calls[2][1] as RequestInit)).toEqual(
+      await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit),
+    );
   });
 
   test('429 → quota with ratelimited_until, return upstream 429', async () => {
@@ -1303,7 +1306,13 @@ describe('callCodexResponsesCompact', () => {
     expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2');
     // Both compact requests hit the same URL; the bearer flipped from at_kv to at2.
     expect(fetchSpy.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
-    expect(new Headers((fetchSpy.mock.calls[2][1] as RequestInit).headers).get('authorization')).toBe('Bearer at2');
+    const firstInit = fetchSpy.mock.calls[0][1] as RequestInit;
+    const retryInit = fetchSpy.mock.calls[2][1] as RequestInit;
+    expect(new Headers(retryInit.headers).get('authorization')).toBe('Bearer at2');
+    expect(new Headers(retryInit.headers).get('x-codex-turn-metadata')).toBe(
+      new Headers(firstInit.headers).get('x-codex-turn-metadata'),
+    );
+    expect(await readJsonRequest(retryInit)).toEqual(await readJsonRequest(firstInit));
   });
 
   test('retains a newly observed plan when the compact 401 refresh omits it', async () => {
