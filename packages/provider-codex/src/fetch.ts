@@ -21,7 +21,7 @@ import {
 import type { CodexAccessTokenEntry, CodexAccountCredential } from './state.ts';
 import { isEventStreamMediaType } from '@floway-dev/protocols/common';
 import type { ImagesGenerationsPayload } from '@floway-dev/protocols/images';
-import type { CanonicalResponsesCompactPayload, CanonicalResponsesPayload, ResponsesCompactionResult, ResponsesInputAdditionalToolsItem, ResponsesInputItem, ResponsesNamespaceTool, ResponsesStreamEvent, ResponsesTool } from '@floway-dev/protocols/responses';
+import type { CanonicalResponsesPayload, ResponsesCompactionResult, ResponsesInputAdditionalToolsItem, ResponsesInputItem, ResponsesNamespaceTool, ResponsesStreamEvent, ResponsesTool } from '@floway-dev/protocols/responses';
 import { parseResponsesStream } from '@floway-dev/protocols/responses';
 import { jsonRequestBody, serializeOpenAIImagesEditsJsonPayload, type ImagesEditsRequest, type ProviderCallResult, type ProviderModel, type ProviderStreamResult, streamingProviderCall, type UpstreamCallOptions } from '@floway-dev/provider';
 
@@ -57,7 +57,7 @@ export interface CallCodexResponsesOptions extends CodexBackendCallBase {
 }
 
 export interface CallCodexResponsesCompactOptions extends CodexBackendCallBase {
-  body: Omit<CanonicalResponsesCompactPayload, 'model' | 'store'>;
+  body: Omit<CanonicalResponsesPayload, 'model'>;
 }
 
 export interface CallCodexAlphaSearchOptions extends CodexBackendCallBase {
@@ -533,6 +533,22 @@ const projectResponsesLiteBody = (
   return body;
 };
 
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/codex-api/src/common.rs#L46-L66
+const projectCodexCompactBody = (source: Omit<CanonicalResponsesPayload, 'model'>): Record<string, unknown> => {
+  const runtimeSource = source as unknown as Record<string, unknown>;
+  return {
+    input: source.input,
+    parallel_tool_calls: source.parallel_tool_calls ?? false,
+    ...(source.instructions !== undefined && { instructions: source.instructions }),
+    ...(source.tools !== undefined && { tools: source.tools }),
+    ...(source.reasoning !== undefined && { reasoning: source.reasoning }),
+    ...(source.service_tier !== undefined && { service_tier: source.service_tier }),
+    ...(source.prompt_cache_key !== undefined && { prompt_cache_key: source.prompt_cache_key }),
+    ...(source.text !== undefined && { text: source.text }),
+    ...(runtimeSource.access_programs !== undefined && { access_programs: runtimeSource.access_programs }),
+  };
+};
+
 const buildCodexResponsesBody = (
   opts: CallCodexResponsesOptions,
   identity: CodexRequestIdentity,
@@ -584,7 +600,12 @@ const dispatchCodexHttpCall = async (
   headers.set('content-type', 'application/json');
   headers.set('session-id', identity.sessionId);
   headers.set('thread-id', identity.threadId);
-  headers.set('x-client-request-id', identity.clientRequestId);
+  // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L680-L693
+  if (path === CODEX_RESPONSES_COMPACT_PATH) {
+    headers.set('x-codex-installation-id', identity.installationId);
+  } else {
+    headers.set('x-client-request-id', identity.clientRequestId);
+  }
   headers.set('x-codex-window-id', identity.windowId);
   if (turnMetadataJson !== null) headers.set('x-codex-turn-metadata', turnMetadataJson);
   // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L2129-L2135
@@ -740,7 +761,7 @@ const prepareUnaryCompactCall = (opts: CallCodexResponsesCompactOptions): Prepar
   const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
   const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, uuidV7());
   const turnMetadataJson = buildCodexTurnMetadataJson(identity, { requestKind: 'compaction' }, clientTurnMetadata);
-  const source = { ...opts.body, model: opts.model.id } as Record<string, unknown>;
+  const source = { ...projectCodexCompactBody(opts.body), model: opts.model.id };
   return {
     identity,
     body: codexModelUsesResponsesLite(opts.model) ? projectResponsesLiteBody(source, identity) : source,

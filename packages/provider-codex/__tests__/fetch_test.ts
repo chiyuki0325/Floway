@@ -1237,18 +1237,66 @@ describe('callCodexResponsesCompact', () => {
 
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
-    expect(new Headers(init.headers).get('accept')).toBe('application/json');
-    expect(new Headers(init.headers).get('authorization')).toBe('Bearer at_kv');
-    expect(new Headers(init.headers).get('x-openai-fedramp')).toBe('true');
+    const headers = new Headers(init.headers);
+    expect(headers.get('accept')).toBe('application/json');
+    expect(headers.get('authorization')).toBe('Bearer at_kv');
+    expect(headers.get('x-openai-fedramp')).toBe('true');
+    expect(headers.get('x-codex-installation-id')).toBe(activeAccount.openaiDeviceId);
+    expect(headers.get('x-client-request-id')).toBeNull();
 
     const body = await readJsonRequest(init) as Record<string, unknown>;
     expect(body.model).toBe('gpt-5.4');
     expect(body.input).toEqual([{ type: 'message', role: 'user', content: 'hello' }]);
+    expect(body.parallel_tool_calls).toBe(false);
     expect(body.stream).toBeUndefined();
     expect(body.store).toBeUndefined();
 
     expect(result.result.object).toBe('response.compaction');
     expect(result.result.output[0]).toMatchObject({ id: 'cmp_x', type: 'compaction', encrypted_content: 'FULL_BLOB' });
+  });
+
+  test('projects the Codex compact payload instead of the public OpenAI compact shape', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    await callCodexResponsesCompact({
+      upstreamId,
+      account: activeAccount,
+      model,
+      body: {
+        input: [{ type: 'message', role: 'user', content: 'hello' }],
+        instructions: 'Base instructions.',
+        tools: [{ type: 'function', name: 'exec', parameters: { type: 'object' } }],
+        parallel_tool_calls: true,
+        reasoning: { effort: 'high', summary: 'concise' },
+        service_tier: 'priority',
+        prompt_cache_key: 'session-key',
+        text: { verbosity: 'low' },
+        previous_response_id: 'resp_previous',
+        prompt_cache_options: { mode: 'explicit', ttl: '30m' },
+        prompt_cache_retention: '24h',
+        stream: true,
+        store: true,
+        temperature: 0.2,
+        access_programs: { cyber: 'daybreak_blue' },
+      } as Parameters<typeof callCodexResponsesCompact>[0]['body'] & { access_programs: { cyber: string } },
+      headers: new Headers(),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    });
+
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit);
+    expect(body).toEqual({
+      model: 'gpt-5.4',
+      input: [{ type: 'message', role: 'user', content: 'hello' }],
+      instructions: 'Base instructions.',
+      tools: [{ type: 'function', name: 'exec', parameters: { type: 'object' } }],
+      parallel_tool_calls: true,
+      reasoning: { effort: 'high', summary: 'concise' },
+      service_tier: 'priority',
+      prompt_cache_key: 'session-key',
+      text: { verbosity: 'low' },
+      access_programs: { cyber: 'daybreak_blue' },
+    });
   });
 
   test('uses the Responses Lite transport contract for compaction', async () => {
@@ -1308,10 +1356,12 @@ describe('callCodexResponsesCompact', () => {
     expect(fetchSpy.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
     const firstInit = fetchSpy.mock.calls[0][1] as RequestInit;
     const retryInit = fetchSpy.mock.calls[2][1] as RequestInit;
-    expect(new Headers(retryInit.headers).get('authorization')).toBe('Bearer at2');
-    expect(new Headers(retryInit.headers).get('x-codex-turn-metadata')).toBe(
-      new Headers(firstInit.headers).get('x-codex-turn-metadata'),
-    );
+    const firstHeaders = new Headers(firstInit.headers);
+    const retryHeaders = new Headers(retryInit.headers);
+    expect(retryHeaders.get('authorization')).toBe('Bearer at2');
+    expect(retryHeaders.get('x-codex-installation-id')).toBe(firstHeaders.get('x-codex-installation-id'));
+    expect(retryHeaders.get('x-client-request-id')).toBeNull();
+    expect(retryHeaders.get('x-codex-turn-metadata')).toBe(firstHeaders.get('x-codex-turn-metadata'));
     expect(await readJsonRequest(retryInit)).toEqual(await readJsonRequest(firstInit));
   });
 

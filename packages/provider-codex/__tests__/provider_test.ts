@@ -285,6 +285,41 @@ describe('createCodexProvider', () => {
     ]);
   });
 
+  test('callResponses keeps Codex-supported fields when dispatching unary compact', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'resp_compact',
+      object: 'response.compaction',
+      output: [{ id: 'cmp_1', type: 'compaction', encrypted_content: 'blob' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const instance = createCodexProvider(baseRecord);
+    const result = await instance.instance.callResponses(
+      stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } }),
+      {
+        input: [{ type: 'message', role: 'user', content: 'compact this' }],
+        tools: [{ type: 'function', name: 'exec', parameters: { type: 'object' } }],
+        parallel_tool_calls: true,
+        reasoning: { effort: 'high' },
+        text: { verbosity: 'low' },
+        previous_response_id: 'resp_previous',
+      },
+      'compact',
+      undefined,
+      noopUpstreamCallOptions(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('compact');
+    const body = await readJsonRequest(fetchSpy.mock.calls[0]?.[1] as RequestInit) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      model: 'gpt-5.4',
+      tools: [{ type: 'function', name: 'exec', parameters: { type: 'object' } }],
+      parallel_tool_calls: true,
+      reasoning: { effort: 'high' },
+      text: { verbosity: 'low' },
+    });
+    expect(body).not.toHaveProperty('previous_response_id');
+  });
+
   test('callResponses re-reads state per request (operator re-import takes effect)', async () => {
     repo.getById.mockResolvedValueOnce({ ...baseRecord, state: { accounts: [{ chatgptAccountId: 'acc', refresh_token: 'rt_v1', state: 'session_terminated', state_updated_at: '2026-01-02T00:00:00Z', openaiDeviceId: '11111111-2222-4333-8444-555555555555', accessToken: null, quotaSnapshot: null }] } as CodexUpstreamState });
     const instance = createCodexProvider(baseRecord);

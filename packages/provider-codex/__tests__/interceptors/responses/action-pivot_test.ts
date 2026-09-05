@@ -6,15 +6,8 @@ import type { Interceptor } from '@floway-dev/interceptor';
 import { initProviderRepo, type ProviderResponsesResult, type UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals, readJsonRequest } from '@floway-dev/test-utils';
 
-// Codex's terminal handler in provider.ts switches on `ctx.action` (the
-// post-chain value), so an interceptor that flips it mid-chain reroutes
-// dispatch. Drive the contract by swapping CODEX_RESPONSES_BOUNDARY for one
-// that ends in a pivot interceptor (generate → compact), then call with
-// action='generate' and a generate-shaped body. The wire request seen at
-// the upstream MUST hit /codex/responses/compact AND the body MUST NOT
-// carry generate-only fields (tools/reasoning/temperature/...) — the
-// per-action narrowing through `toCompactPayloadShape` is what closes that
-// gap.
+// Codex dispatches from the post-chain action, so a pivot must select both
+// the unary endpoint and its provider-specific wire projector.
 const pivotGenerateToCompact: Interceptor<ResponsesBoundaryCtx, object, ProviderResponsesResult> = async (ctx, _env, run) => {
   ctx.action = 'compact';
   return await run();
@@ -73,7 +66,7 @@ const compactJsonResponse = (): Response => new Response(
   { status: 200, headers: { 'content-type': 'application/json' } },
 );
 
-test('Codex terminal dispatches on post-chain ctx.action (interceptor flip generate→compact routes to the unary /responses/compact path with a narrowed body)', async () => {
+test('Codex terminal dispatches a post-chain compact action with the Codex compact shape', async () => {
   let compactUrl: string | undefined;
   let compactBody: Record<string, unknown> | undefined;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -88,9 +81,6 @@ test('Codex terminal dispatches on post-chain ctx.action (interceptor flip gener
   });
 
   const instance = createCodexProvider(baseRecord);
-  // Generate-shaped body — carries tools, reasoning, temperature, etc. None
-  // of these are allowed on /responses/compact. The pivot above flips action
-  // to 'compact'; the terminal must narrow the body before sending upstream.
   const result = await instance.instance.callResponses(
     stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } }),
     {
@@ -113,11 +103,12 @@ test('Codex terminal dispatches on post-chain ctx.action (interceptor flip gener
   if (compactUrl === undefined) throw new Error('expected /codex/responses/compact to be hit');
   if (compactBody === undefined) throw new Error('expected compact body capture');
 
-  // Wire body MUST carry the compact-allowed fields (input, model) and MUST
-  // NOT carry any of the generate-only fields the caller passed in.
   assertEquals('input' in compactBody, true);
   assertEquals(compactBody.model, 'gpt-5.4');
-  for (const banned of ['tools', 'reasoning', 'temperature', 'max_output_tokens', 'stream', 'parallel_tool_calls']) {
-    assertEquals(banned in compactBody, false, `compact wire body must not carry generate-only field "${banned}"`);
+  assertEquals(compactBody.tools, [{ type: 'function', name: 'noop', description: 'noop', parameters: { type: 'object' }, strict: false }]);
+  assertEquals(compactBody.reasoning, { effort: 'medium' });
+  assertEquals(compactBody.parallel_tool_calls, false);
+  for (const banned of ['temperature', 'max_output_tokens', 'stream']) {
+    assertEquals(banned in compactBody, false, `compact wire body must not carry unsupported field "${banned}"`);
   }
 });

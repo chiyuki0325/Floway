@@ -8,7 +8,6 @@ import type { ResponsesBoundaryCtx } from './interceptors/responses/types.ts';
 import { codexImageProviderModel, codexPlanSupportsImages, codexRawToProviderModel, fetchCodexCatalog } from './models.ts';
 import { assertCodexUpstreamState, findCodexAccountIndex, replaceCodexAccount } from './state.ts';
 import { runInterceptors } from '@floway-dev/interceptor';
-import { toCompactPayloadShape } from '@floway-dev/protocols/responses';
 import { getProviderRepo, resolveEffectiveFlags, type ProviderInstance, type Provider, type ProviderCallResult, type ProviderResponsesResult, type ProviderStreamResult, type UpstreamRecord } from '@floway-dev/provider';
 
 // https://github.com/openai/codex/blob/c607da9f371bb66a41cc772c6ddf1989d28137d3/codex-rs/codex-api/src/requests/headers.rs#L5-L12
@@ -150,11 +149,7 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
           const backendCallBase = { upstreamId: record.id, account, isFedRampAccount, model, headers: ctx.headers, signal, effects, call: opts };
           switch (ctx.action) {
           case 'compact':
-            // Narrow to the compact wire shape — defends against a future
-            // interceptor that flips `ctx.action` from 'generate' to 'compact'
-            // mid-chain and leaves the generate-shaped body (tools, reasoning,
-            // etc.) in place.
-            return { action: 'compact', ...(await callCodexResponsesCompact({ ...backendCallBase, body: toCompactPayloadShape(wireBody) })) };
+            return { action: 'compact', ...(await callCodexResponsesCompact({ ...backendCallBase, body: wireBody })) };
           case 'generate':
             return { action: 'generate', ...(await callCodexResponses({ ...backendCallBase, body: wireBody })) };
           default:
