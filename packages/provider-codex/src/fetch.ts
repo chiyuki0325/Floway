@@ -154,6 +154,8 @@ interface CodexRequestIdentity {
   clientRequestId: string;
   turnId: string;
   windowId: string;
+  windowNumber: number;
+  contextWindowId: string;
 }
 
 export interface CodexCompactionTurnMetadata {
@@ -196,6 +198,12 @@ const stringField = (record: Record<string, unknown> | null, key: string): strin
   return trimmed.length > 0 ? trimmed : null;
 };
 
+const nonNegativeIntegerField = (record: Record<string, unknown> | null, key: string): number | null => {
+  if (record === null) return null;
+  const value = record[key];
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+};
+
 const clientCodexClientMetadata = (body: unknown): Record<string, unknown> => {
   if (!isPlainObject(body)) return {};
   const candidate = body.client_metadata;
@@ -236,7 +244,7 @@ const callerTurnMetadata = (opts: CodexBackendCallBase, clientMetadata: Record<s
 // key on a different surface than identity already absorbed can't force the
 // three projections to disagree.
 const IDENTITY_MIRRORED_TURN_METADATA_KEYS = new Set<string>([
-  'installation_id', 'session_id', 'thread_id', 'turn_id', 'window_id',
+  'context_window_id', 'installation_id', 'session_id', 'thread_id', 'turn_id', 'window_id', 'window_number',
 ]);
 
 const IDENTITY_MIRRORED_CLIENT_METADATA_KEYS = new Set<string>([
@@ -248,6 +256,7 @@ const buildCodexRequestIdentity = (
   body: CodexResponsesBody,
   clientMetadata: Record<string, unknown>,
   clientTurnMetadata: Record<string, unknown> | null,
+  fallbackContextWindowId: string,
 ): CodexRequestIdentity => {
   // Identity priority for every mirrored id follows the same per-turn rule as
   // `callerTurnMetadata`: caller body `client_metadata` key → parsed
@@ -274,18 +283,20 @@ const buildCodexRequestIdentity = (
   const installationId = stringField(clientMetadata, 'x-codex-installation-id')
     ?? stringField(clientTurnMetadata, 'installation_id')
     ?? opts.account.openaiDeviceId;
-  // Codex advances the window on every auto-compaction — the id is
-  // `{thread_id}:{auto_compact_window_number}` — and a reused socket carries
-  // the advanced value in the frame body alone:
-  // https://github.com/openai/codex/blob/a16863f8704831d13e041ed7dba2c4a57a2a940b/codex-rs/core/src/session/mod.rs#L3684-L3689
+  // Codex keeps the compatibility window id as `{thread_id}:{window_number}`
+  // and carries the UUIDv7 context-window identity as a separate canonical
+  // metadata field.
+  // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/session/mod.rs#L4152-L4165
+  const windowNumber = nonNegativeIntegerField(clientTurnMetadata, 'window_number') ?? 0;
   const windowId = stringField(clientMetadata, 'x-codex-window-id')
     ?? stringField(clientTurnMetadata, 'window_id')
     ?? trimHeader(opts.headers, 'x-codex-window-id')
-    ?? `${sessionId}:0`;
+    ?? `${threadId}:${windowNumber}`;
+  const contextWindowId = stringField(clientTurnMetadata, 'context_window_id') ?? fallbackContextWindowId;
   const turnId = stringField(clientMetadata, 'turn_id')
     ?? stringField(clientTurnMetadata, 'turn_id')
     ?? uuidV7();
-  return { installationId, sessionId, threadId, clientRequestId, turnId, windowId };
+  return { installationId, sessionId, threadId, clientRequestId, turnId, windowId, windowNumber, contextWindowId };
 };
 
 // A stateless caller that re-sends the full conversation every turn would
@@ -330,6 +341,8 @@ const buildCodexTurnMetadata = (
     thread_id: identity.threadId,
     turn_id: identity.turnId,
     window_id: identity.windowId,
+    window_number: identity.windowNumber,
+    context_window_id: identity.contextWindowId,
     request_kind: options.requestKind,
   };
   if (options.compaction !== undefined) base.compaction = options.compaction;
@@ -644,10 +657,11 @@ const performStreamingResponsesCall = async (
   opts: CallCodexResponsesOptions,
   accessToken: CodexAccessTokenEntry,
   alreadyRetried: boolean,
+  fallbackContextWindowId = uuidV7(),
 ): Promise<ProviderStreamResult<ResponsesStreamEvent>> => {
   const clientMetadata = clientCodexClientMetadata(opts.body);
   const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
-  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata);
+  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, fallbackContextWindowId);
   const metadata: CodexTurnMetadataOptions = opts.body.input.some(item => item.type === 'compaction_trigger') ? CODEX_RESPONSES_COMPACTION_V2_TURN_METADATA : { requestKind: 'turn' };
   const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
   const upstreamFetch = dispatchCodexHttpCall(
@@ -665,7 +679,7 @@ const performStreamingResponsesCall = async (
   if (!result.ok && result.response.status === 401 && !alreadyRetried) {
     const fresh = await refreshAccessTokenForRetry(opts, accessToken);
     if (!fresh.ok) return { ok: false, modelKey: opts.model.id, response: fresh.response };
-    return await performStreamingResponsesCall(opts, fresh.accessToken, true);
+    return await performStreamingResponsesCall(opts, fresh.accessToken, true, fallbackContextWindowId);
   }
 
   return result;
@@ -675,10 +689,11 @@ const performUnaryCompactCall = async (
   opts: CallCodexResponsesCompactOptions,
   accessToken: CodexAccessTokenEntry,
   alreadyRetried: boolean,
+  fallbackContextWindowId = uuidV7(),
 ): Promise<ProviderCompactionResult> => {
   const clientMetadata = clientCodexClientMetadata(opts.body);
   const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
-  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata);
+  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, fallbackContextWindowId);
   const metadata: CodexTurnMetadataOptions = { requestKind: 'compaction' };
   const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
   const source = { ...opts.body, model: opts.model.id } as Record<string, unknown>;
@@ -698,7 +713,7 @@ const performUnaryCompactCall = async (
   if (response.status === 401 && !alreadyRetried) {
     const fresh = await refreshAccessTokenForRetry(opts, accessToken);
     if (!fresh.ok) return { ok: false, modelKey: opts.model.id, response: fresh.response };
-    return await performUnaryCompactCall(opts, fresh.accessToken, true);
+    return await performUnaryCompactCall(opts, fresh.accessToken, true, fallbackContextWindowId);
   }
 
   if (!response.ok) return { ok: false, modelKey: opts.model.id, response };
@@ -721,6 +736,8 @@ const performAlphaSearchCall = async (
     clientRequestId: requestId,
     turnId: uuidV7(),
     windowId: `${requestId}:0`,
+    windowNumber: 0,
+    contextWindowId: uuidV7(),
   };
   const turnMetadataJson = trimHeader(opts.headers, 'x-codex-turn-metadata');
   const response = await dispatchCodexHttpCall(
