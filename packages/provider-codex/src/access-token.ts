@@ -217,7 +217,7 @@ const ensureCodexAccessTokenInner = async (
   try {
     minted = await mint(account.refresh_token, account.accessToken);
   } catch (err) {
-    if (err instanceof CodexOAuthSessionTerminatedError && err.code === 'invalid_grant' && recoveryAllowed) {
+    if (err instanceof CodexOAuthSessionTerminatedError && err.code.toLowerCase() === 'invalid_grant' && recoveryAllowed) {
       const recovered = await recoverFromRefreshRace(upstreamId, accountId, account.refresh_token, mint);
       if (recovered) return recovered;
     }
