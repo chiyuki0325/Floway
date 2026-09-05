@@ -114,8 +114,8 @@ describe('createCodexProvider', () => {
     // Provider surfaces both visible and hidden upstream models — operators
     // can dispatch to `codex-auto-review` even though ChatGPT's UI hides it.
     expect(models.map(m => m.id)).toEqual(['gpt-5.4', 'codex-auto-review', 'gpt-image-2']);
-    expect(models[0].endpoints).toEqual({ openaiResponses: {} });
-    expect(models[2]).toMatchObject({ kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
+    expect(models[0].endpoints).toEqual({ responses: {} });
+    expect(models[2]).toMatchObject({ kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0][0]).toMatch(/\/codex\/models/);
   });
@@ -204,24 +204,24 @@ describe('createCodexProvider', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(modelsResponse());
     const recordWithOverride: UpstreamRecord = {
       ...baseRecord,
-      flagOverrides: { 'openai-responses-web-search-shim': true },
+      flagOverrides: { 'responses-web-search-shim': true },
     };
     const instance = createCodexProvider(recordWithOverride);
     const models = await instance.instance.getProvidedModels(directFetcher);
     for (const m of models) {
-      expect(m.enabledFlags.has('rewrite-system-to-developer')).toBe(true);
-      expect(m.enabledFlags.has('openai-responses-web-search-shim')).toBe(true);
+      expect(m.enabledFlags.has('rewrite-system-to-developer')).toBe(false);
+      expect(m.enabledFlags.has('responses-web-search-shim')).toBe(true);
     }
   });
 
-  test('callOpenAIResponses preserves developer messages on the Codex wire', async () => {
+  test('callOpenAIResponses preserves system and developer messages without synthetic instructions', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     const instance = createCodexProvider(baseRecord);
     const result = await instance.instance.callOpenAIResponses(
-      stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { openaiResponses: {} } }),
+      stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } }),
       {
         input: [
-          { type: 'message', role: 'developer', content: 'base instructions' },
+          { type: 'message', role: 'system', content: 'system instructions' },
           { type: 'message', role: 'user', content: 'hi' },
           { type: 'message', role: 'developer', content: 'inline instructions' },
         ],
@@ -236,9 +236,9 @@ describe('createCodexProvider', () => {
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
     if (init === undefined) throw new Error('expected a Codex upstream request');
     const body = await readJsonRequest(init) as Record<string, unknown>;
-    expect(body.instructions).toBe("You're a helpful assistant.");
+    expect(body).not.toHaveProperty('instructions');
     expect(body.input).toEqual([
-      { type: 'message', role: 'developer', content: 'base instructions' },
+      { type: 'message', role: 'system', content: 'system instructions' },
       { type: 'message', role: 'user', content: 'hi' },
       { type: 'message', role: 'developer', content: 'inline instructions' },
     ]);
@@ -248,7 +248,7 @@ describe('createCodexProvider', () => {
     repo.getById.mockResolvedValueOnce({ ...baseRecord, state: { accounts: [{ chatgptAccountId: 'acc', refresh_token: 'rt_v1', state: 'session_terminated', state_updated_at: '2026-01-02T00:00:00Z', openaiDeviceId: '11111111-2222-4333-8444-555555555555', accessToken: null, quotaSnapshot: null }] } as CodexUpstreamState });
     const instance = createCodexProvider(baseRecord);
     const result = await instance.instance.callOpenAIResponses(
-      stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { openaiResponses: {} } }),
+      stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } }),
       { input: [], stream: true },
       'generate',
       undefined,
@@ -258,16 +258,16 @@ describe('createCodexProvider', () => {
     if (!result.ok) expect(result.response.status).toBe(503);
   });
 
-  test('callOpenAIImagesGenerations posts gpt-image-2 through the ChatGPT Codex endpoint', async () => {
+  test('callImagesGenerations posts gpt-image-2 through the ChatGPT Codex endpoint', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       created: 1,
       data: [{ b64_json: 'aW1hZ2U=' }],
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const instance = createCodexProvider(baseRecord);
-    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
+    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
     const options = noopUpstreamCallOptions();
     options.headers.set('x-codex-image-turn-id', 'turn-image');
-    const result = await instance.instance.callOpenAIImagesGenerations(model, { prompt: 'an orange circle', quality: 'low' }, undefined, options);
+    const result = await instance.instance.callImagesGenerations(model, { prompt: 'an orange circle', quality: 'low' }, undefined, options);
     expect(result.response.status).toBe(200);
     expect(result.modelKey).toBe('gpt-image-2');
     const [url, init] = fetchSpy.mock.calls[0];
@@ -279,27 +279,27 @@ describe('createCodexProvider', () => {
     expect(await readJsonRequest(init as RequestInit)).toEqual({ prompt: 'an orange circle', quality: 'low', model: 'gpt-image-2' });
   });
 
-  test('callOpenAIImagesGenerations rejects an explicit Free plan without touching upstream', async () => {
+  test('callImagesGenerations rejects an explicit Free plan without touching upstream', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const freeRecord: UpstreamRecord = {
       ...baseRecord,
       config: { accounts: [{ email: 'a@b.com', chatgptAccountId: 'acc', chatgptUserId: 'usr', planType: 'free' }] },
     };
     const instance = createCodexProvider(freeRecord);
-    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
-    const result = await instance.instance.callOpenAIImagesGenerations(model, { prompt: 'an orange circle' }, undefined, noopUpstreamCallOptions());
+    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
+    const result = await instance.instance.callImagesGenerations(model, { prompt: 'an orange circle' }, undefined, noopUpstreamCallOptions());
     expect(result.response.status).toBe(403);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test('callOpenAIImagesEdits returns an operation-neutral error for an explicit Free plan', async () => {
+  test('callImagesEdits returns an operation-neutral error for an explicit Free plan', async () => {
     const freeRecord: UpstreamRecord = {
       ...baseRecord,
       config: { accounts: [{ email: 'a@b.com', chatgptAccountId: 'acc', chatgptUserId: 'usr', planType: 'free' }] },
     };
     const instance = createCodexProvider(freeRecord);
-    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
-    const result = await instance.instance.callOpenAIImagesEdits(model, {
+    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
+    const result = await instance.instance.callImagesEdits(model, {
       images: [{ type: 'reference', reference: { image_url: 'https://example.test/image.png' } }],
       parameters: { prompt: 'edit' },
     }, undefined, noopUpstreamCallOptions());
@@ -309,16 +309,16 @@ describe('createCodexProvider', () => {
     });
   });
 
-  test('callOpenAIImagesEdits sends uploads as JSON data URLs to the ChatGPT Codex endpoint', async () => {
+  test('callImagesEdits sends uploads as JSON data URLs to the ChatGPT Codex endpoint', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       created: 1,
       data: [{ b64_json: 'ZWRpdA==' }],
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const instance = createCodexProvider(baseRecord);
-    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
+    const model = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
     const options = noopUpstreamCallOptions();
     options.headers.set('originator', 'chatgpt_cca');
-    const result = await instance.instance.callOpenAIImagesEdits(model, {
+    const result = await instance.instance.callImagesEdits(model, {
       images: [{ type: 'upload', file: new File(['image'], 'image.png', { type: 'image/png' }) }],
       parameters: { prompt: 'make it blue' },
     }, undefined, options);
@@ -334,14 +334,14 @@ describe('createCodexProvider', () => {
   });
 
   test.each([
-    'callOpenAIEmbeddings',
-    'callOpenAIAudioTranscriptions',
-    'callOpenAIChatCompletions',
-    'callAnthropicMessagesCountTokens',
-    'callAnthropicMessages',
+    'callEmbeddings',
+    'callAudioTranscriptions',
+    'callChatCompletions',
+    'callMessagesCountTokens',
+    'callMessages',
   ] as const)('%s returns a synthetic 405 (data plane never dispatches these to Codex)', async method => {
     const instance = createCodexProvider(baseRecord);
-    const model = stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { openaiResponses: {} } });
+    const model = stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } });
     // @ts-expect-error: each method has a different body type; we only assert
     // the synthetic 405 envelope is what comes back.
     const result = await instance.instance[method](model, {}, undefined, noopUpstreamCallOptions()) as { response: Response };

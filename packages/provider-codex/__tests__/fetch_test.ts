@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { createUpstreamStateRepoStub } from './upstream-state-repo.ts';
 import { CODEX_ORIGINATOR, CODEX_USER_AGENT } from '../src/constants.ts';
-import { callCodexAlphaSearch, callCodexOpenAIImagesGenerations, callCodexOpenAIResponses, callCodexOpenAIResponsesCompact, type CodexCallEffects } from '../src/fetch.ts';
+import { callCodexAlphaSearch, callCodexImagesGenerations, callCodexResponses, callCodexResponsesCompact, type CodexCallEffects } from '../src/fetch.ts';
 import type { CodexAccessTokenEntry, CodexAccountCredential, CodexQuotaSnapshotEntryMap, CodexUpstreamState } from '../src/state.ts';
-import type { OpenAIResponsesResult } from '@floway-dev/protocols/openai-responses';
+import type { ResponsesResult } from '@floway-dev/protocols/openai-responses';
 import { initProviderRepo, type UpstreamRecord } from '@floway-dev/provider';
 import { noopUpstreamCallOptions, readJsonRequest, stubProviderModel } from '@floway-dev/test-utils';
 
@@ -14,8 +14,14 @@ const makeEffects = (): CodexCallEffects => ({
 });
 
 const activeAccount: CodexAccountCredential = { chatgptAccountId: 'acc', refresh_token: 'rt_v1', state: 'active', state_updated_at: '2026-01-01T00:00:00Z', openaiDeviceId: '11111111-2222-4333-8444-555555555555', accessToken: null, quotaSnapshot: null };
-const model = stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { openaiResponses: {} } });
-const imageModel = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
+const model = stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } });
+const responsesLiteModel = stubProviderModel({
+  id: 'gpt-6-astra',
+  display_name: 'gpt-6-astra',
+  endpoints: { responses: {} },
+  providerData: { useResponsesLite: true },
+});
+const imageModel = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
 
 const upstreamId = 'up_a';
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -116,9 +122,9 @@ const idTokenWithoutPlan = (): string => [
   Buffer.from('signature').toString('base64url'),
 ].join('.');
 
-describe('callCodexOpenAIResponses — gates', () => {
+describe('callCodexResponses — gates', () => {
   test('refuses non-active state with synthetic 503', async () => {
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: { ...activeAccount, state: 'session_terminated' },
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -139,7 +145,7 @@ describe('callCodexOpenAIResponses — gates', () => {
       },
     });
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -148,20 +154,20 @@ describe('callCodexOpenAIResponses — gates', () => {
   });
 });
 
-describe('callCodexOpenAIResponses — token freshness', () => {
+describe('callCodexResponses — token freshness', () => {
   test('refreshes before call when no cached access token', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at_new', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
       .mockResolvedValueOnce(sseResponse());
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
     expect(result.ok).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const openaiResponsesInit = fetchSpy.mock.calls[1][1] as RequestInit;
-    expect(new Headers(openaiResponsesInit.headers).get('authorization')).toBe('Bearer at_new');
+    const responsesInit = fetchSpy.mock.calls[1][1] as RequestInit;
+    expect(new Headers(responsesInit.headers).get('authorization')).toBe('Bearer at_new');
     expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2');
     expect((currentRecord.state as CodexUpstreamState).accounts[0].accessToken?.token).toBe('at_new');
   });
@@ -169,7 +175,7 @@ describe('callCodexOpenAIResponses — token freshness', () => {
   test('reuses fresh state-cached access token without refreshing', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -180,7 +186,7 @@ describe('callCodexOpenAIResponses — token freshness', () => {
   test('persistTerminalState refresh_failed when /oauth/token returns app_session_terminated', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(errorJson(400, { error: { code: 'app_session_terminated', message: 'gone' } }));
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
@@ -189,11 +195,11 @@ describe('callCodexOpenAIResponses — token freshness', () => {
   });
 });
 
-describe('callCodexOpenAIResponses — upstream classification', () => {
+describe('callCodexResponses — upstream classification', () => {
   test('happy path: 200 → ok:true, quota persisted', async () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -207,9 +213,9 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('upstream body has store:false and stream:true forced even if caller passes otherwise', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
-      model, body: { input: [], stream: false as unknown as true, store: true } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      model, body: { input: [], stream: false as unknown as true, store: true } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
     const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
@@ -218,17 +224,114 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     expect(body.stream).toBe(true);
   });
 
+  test('projects Responses Lite instructions and tools into stable input prefixes', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    const request = {
+      upstreamId,
+      account: activeAccount,
+      model: responsesLiteModel,
+      body: {
+        instructions: 'Base instructions.',
+        input: [{ type: 'message', role: 'user', content: 'hello' }],
+        tools: [
+          { type: 'web_search' },
+          { type: 'function', name: 'exec', parameters: { type: 'object' } },
+          {
+            type: 'namespace',
+            name: 'functions',
+            description: 'Existing functions.',
+            tools: [{ type: 'custom', name: 'shell', description: 'Run shell.' }],
+          },
+          { type: 'namespace', name: 'apps', description: 'Apps.', tools: [] },
+        ],
+        parallel_tool_calls: true,
+        reasoning: { effort: 'high', context: 'current_turn' },
+        stream: true,
+      },
+      headers: new Headers({ 'session-id': 'lite-thread' }),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    } as unknown as Parameters<typeof callCodexResponses>[0];
+
+    await callCodexResponses(request);
+    await callCodexResponses({ ...request, headers: new Headers({ 'session-id': 'lite-thread' }) });
+
+    const firstInit = fetchSpy.mock.calls[0][1] as RequestInit;
+    const first = await readJsonRequest(firstInit) as Record<string, unknown>;
+    const second = await readJsonRequest(fetchSpy.mock.calls[1][1] as RequestInit) as Record<string, unknown>;
+    const input = first.input as Array<Record<string, unknown>>;
+    const additionalTools = input[0] as Record<string, unknown>;
+    const tools = additionalTools.tools as Array<Record<string, unknown>>;
+
+    expect(new Headers(firstInit.headers).get('x-openai-internal-codex-responses-lite')).toBe('true');
+    expect(first).not.toHaveProperty('instructions');
+    expect(first).not.toHaveProperty('tools');
+    expect(first.parallel_tool_calls).toBe(false);
+    expect(first.reasoning).toEqual({ effort: 'high', context: 'all_turns' });
+    expect(input[0]).toMatchObject({ type: 'additional_tools', role: 'developer', id: expect.stringMatching(/^at_[0-9a-f-]{36}$/) });
+    expect(input[1]).toEqual({
+      type: 'message',
+      id: expect.stringMatching(/^msg_[0-9a-f-]{36}$/),
+      role: 'developer',
+      content: [{ type: 'input_text', text: 'Base instructions.' }],
+      internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'] },
+    });
+    expect(input[2]).toEqual({ type: 'message', role: 'user', content: 'hello' });
+    expect(tools.map(tool => `${String(tool.type)}:${String(tool.name ?? '')}`)).toEqual([
+      'web_search:',
+      'namespace:functions',
+      'namespace:apps',
+    ]);
+    expect(tools[1]).toEqual({
+      type: 'namespace',
+      name: 'functions',
+      description: 'Existing functions.',
+      tools: [
+        { type: 'function', name: 'exec', parameters: { type: 'object' } },
+        { type: 'custom', name: 'shell', description: 'Run shell.' },
+      ],
+    });
+    expect((second.input as Array<Record<string, unknown>>).slice(0, 2)).toEqual(input.slice(0, 2));
+  });
+
+  test('does not duplicate an existing Responses Lite prefix', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    await callCodexResponses({
+      upstreamId,
+      account: activeAccount,
+      model: responsesLiteModel,
+      body: {
+        input: [
+          { type: 'additional_tools', role: 'developer', tools: [], id: 'at_existing' },
+          { type: 'message', role: 'developer', content: 'already projected', id: 'msg_existing' },
+          { type: 'message', role: 'user', content: 'hello' },
+        ],
+        stream: true,
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
+      headers: new Headers({ 'session-id': 'lite-thread' }),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    });
+
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input.filter(item => item.type === 'additional_tools')).toHaveLength(1);
+    expect(input[0]?.id).toBe('at_existing');
+  });
+
   test('builds Codex responses headers and metadata from a clean set', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model,
       body: {
         input: [],
         stream: true,
         client_metadata: { 'x-codex-installation-id': 'downstream-installation' },
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers({
         'cf-connecting-ip': '203.0.113.10',
         forwarded: 'for=203.0.113.10',
@@ -301,10 +404,10 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       headers: new Headers({ 'session-id': 'stable-session' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
-    } satisfies Parameters<typeof callCodexOpenAIResponses>[0];
+    } satisfies Parameters<typeof callCodexResponses>[0];
 
-    await callCodexOpenAIResponses(request);
-    await callCodexOpenAIResponses({ ...request, headers: new Headers({ 'session-id': 'stable-session' }) });
+    await callCodexResponses(request);
+    await callCodexResponses({ ...request, headers: new Headers({ 'session-id': 'stable-session' }) });
 
     const firstHeaders = new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers);
     const secondHeaders = new Headers((fetchSpy.mock.calls[1][1] as RequestInit).headers);
@@ -331,14 +434,14 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => sseResponse());
 
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true },
       headers: new Headers({ 'session-id': 'session-a' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
     });
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true },
       headers: new Headers({ 'session-id': 'session-b' }),
@@ -368,21 +471,21 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => sseResponse());
 
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true },
       headers: new Headers({ 'session-id': 'cache-session' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
     });
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true, prompt_cache_key: 'caller-cache-key' },
       headers: new Headers({ 'session-id': 'cache-session' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
     });
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true, prompt_cache_key: null },
       headers: new Headers({ 'session-id': 'cache-session' }),
@@ -401,7 +504,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('preserves a hyphenated Codex session id for prompt cache', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model,
       body: { input: [], stream: true },
@@ -418,7 +521,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('canonicalizes downstream session_id to the Codex session-id header', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model,
       body: { input: [], stream: true },
@@ -435,7 +538,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('prefers downstream session-id over session_id when both are provided', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model,
       body: { input: [], stream: true },
@@ -452,7 +555,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('generates a Codex session id when the downstream request has none', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -472,13 +575,13 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
         instructions: 'You are helpful.',
         input: [{ type: 'message', role: 'user', content: 'hello' }],
         stream: true,
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers(),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
-    } satisfies Parameters<typeof callCodexOpenAIResponses>[0];
-    await callCodexOpenAIResponses(turn);
-    await callCodexOpenAIResponses(turn);
+    } satisfies Parameters<typeof callCodexResponses>[0];
+    await callCodexResponses(turn);
+    await callCodexResponses(turn);
 
     const first = new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers).get('session-id');
     const second = new Headers((fetchSpy.mock.calls[1][1] as RequestInit).headers).get('session-id');
@@ -490,13 +593,13 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('derives distinct session ids when only the instructions differ', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    const call = (instructions: string) => callCodexOpenAIResponses({
+    const call = (instructions: string) => callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: {
         instructions,
         input: [{ type: 'message', role: 'user', content: 'hello' }],
         stream: true,
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers(),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
@@ -512,13 +615,13 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('derives distinct session ids when only the first user message differs', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    const call = (content: string) => callCodexOpenAIResponses({
+    const call = (content: string) => callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: {
         instructions: 'System.',
         input: [{ type: 'message', role: 'user', content }],
         stream: true,
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers(),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
@@ -535,7 +638,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     const deviceId = '22222222-3333-4444-9555-666666666666';
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: { ...activeAccount, openaiDeviceId: deviceId },
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -550,13 +653,13 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('prefers a caller-supplied installation id from client_metadata over the account device id', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: { ...activeAccount, openaiDeviceId: 'account-device-id' },
       model,
       body: {
         input: [], stream: true,
         client_metadata: { 'x-codex-installation-id': 'caller-installation-id' },
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers(),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
@@ -572,7 +675,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('passes through caller thread-id and x-client-request-id when distinct from session-id', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true },
       headers: new Headers({
@@ -596,7 +699,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('merges caller-supplied x-codex-turn-metadata extras over the synthesized blob', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true },
       headers: new Headers({
@@ -630,7 +733,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('reads the turn-metadata blob from the body before the header', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: {
         input: [], stream: true,
@@ -644,7 +747,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
             turn_started_at_unix_ms: 1700000000002,
           }),
         },
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       // A WebSocket upgrade's headers are frozen for the life of the socket,
       // so they carry the connection's first turn, not this one.
       headers: new Headers({
@@ -676,14 +779,14 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     const toolNamespacesInfo = { namespaces: [{ name: 'shell', tools: ['exec'] }] };
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: {
         input: [], stream: true,
         client_metadata: {
           'x-codex-turn-metadata': JSON.stringify({ tool_namespaces_info: toolNamespacesInfo, thread_source: 'user' }),
         },
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers({ 'session-id': 'sess' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
@@ -705,12 +808,12 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   test('preserves caller client_metadata extras while keeping identity-mirror keys gateway-owned', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: {
         input: [], stream: true,
         client_metadata: { 'x-extra-key': 'caller-supplied', session_id: '   ' },
-      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
       headers: new Headers({ 'session-id': 'header-session' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
@@ -733,7 +836,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(401, { error: { code: 'token_invalidated', message: 'session ended' } }));
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
@@ -749,7 +852,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }));
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
@@ -765,7 +868,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       'x-codex-primary-reset-after-seconds': '3600',
       'x-codex-secondary-reset-after-seconds': '7200',
     }));
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -780,7 +883,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(503, { error: 'unavailable' }));
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
@@ -797,7 +900,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       .mockResolvedValueOnce(sseResponse(401))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan(), expires_in: 600 }))
       .mockResolvedValueOnce(sseResponse());
-    const result = await callCodexOpenAIResponses({
+    const result = await callCodexResponses({
       upstreamId, account: activeAccount, model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
     expect(result.ok).toBe(true);
@@ -805,7 +908,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
   });
 });
 
-describe('callCodexOpenAIResponses — background-write registration', () => {
+describe('callCodexResponses — background-write registration', () => {
   // Background state writes (quota snapshot on 2xx/429, access-token put on
   // 401-retry) must reach the runtime's waitUntil slot so workerd does not
   // cancel them the instant the streaming response returns to the client.
@@ -815,7 +918,7 @@ describe('callCodexOpenAIResponses — background-write registration', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(),
       call: { ...noopUpstreamCallOptions(), waitUntil },
@@ -830,7 +933,7 @@ describe('callCodexOpenAIResponses — background-write registration', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
       .mockResolvedValueOnce(sseResponse());
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
-    await callCodexOpenAIResponses({
+    await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects: makeEffects(),
       call: { ...noopUpstreamCallOptions(), waitUntil },
@@ -842,7 +945,7 @@ describe('callCodexOpenAIResponses — background-write registration', () => {
   });
 });
 
-describe('callCodexOpenAIImagesGenerations', () => {
+describe('callCodexImagesGenerations', () => {
   test('does not replace a meaningful quota snapshot with a headerless image response', async () => {
     const quotaSnapshot: CodexQuotaSnapshotEntryMap = {
       premium: {
@@ -853,7 +956,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
     seedAccountState({ accessToken: { ...farFutureAccessToken, planType: 'plus' }, quotaSnapshot });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(200, { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }));
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
-    const result = await callCodexOpenAIImagesGenerations({
+    const result = await callCodexImagesGenerations({
       upstreamId,
       account: (currentRecord.state as CodexUpstreamState).accounts[0],
       model: imageModel,
@@ -874,7 +977,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('plus'), expires_in: 600 }))
       .mockResolvedValueOnce(errorJson(200, { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }));
-    const result = await callCodexOpenAIImagesGenerations({
+    const result = await callCodexImagesGenerations({
       upstreamId,
       account: (currentRecord.state as CodexUpstreamState).accounts[0],
       model: imageModel,
@@ -900,7 +1003,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(errorJson(200, {
       access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'), expires_in: 600,
     }));
-    const result = await callCodexOpenAIImagesGenerations({
+    const result = await callCodexImagesGenerations({
       upstreamId,
       account: (currentRecord.state as CodexUpstreamState).accounts[0],
       model: imageModel,
@@ -922,7 +1025,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
       .mockResolvedValueOnce(errorJson(200, {
         access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'), expires_in: 600,
       }));
-    const result = await callCodexOpenAIImagesGenerations({
+    const result = await callCodexImagesGenerations({
       upstreamId,
       account: (currentRecord.state as CodexUpstreamState).accounts[0],
       model: imageModel,
@@ -949,7 +1052,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
       seedAccountState({ refresh_token: 'rt_winner', accessToken: winner });
       return errorJson(401, { error: { code: 'expired_token', message: 'expired' } });
     });
-    const result = await callCodexOpenAIImagesGenerations({
+    const result = await callCodexImagesGenerations({
       upstreamId,
       account: { ...activeAccount, accessToken: { ...farFutureAccessToken, token: 'at_failed', planType: 'plus' } },
       model: imageModel,
@@ -972,7 +1075,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
         access_token: 'at2', refresh_token: 'rt_v2', id_token: idTokenWithoutPlan(), expires_in: 600,
       }))
       .mockResolvedValueOnce(errorJson(200, { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }));
-    const result = await callCodexOpenAIImagesGenerations({
+    const result = await callCodexImagesGenerations({
       upstreamId,
       account: (currentRecord.state as CodexUpstreamState).accounts[0],
       model: imageModel,
@@ -989,15 +1092,15 @@ describe('callCodexOpenAIImagesGenerations', () => {
   });
 });
 
-// `callCodexOpenAIResponsesCompact` shares OAuth + quota + 401-retry plumbing with
-// `callCodexOpenAIResponses` (both go through `prepareCodexCall` →
+// `callCodexResponsesCompact` shares OAuth + quota + 401-retry plumbing with
+// `callCodexResponses` (both go through `prepareCodexCall` →
 // `dispatchCodexHttpCall` → `refreshAccessTokenForRetry`). The streaming
 // suite above pins those shared paths; this block exercises only the
 // compact-specific wire contract — endpoint URL, `Accept: application/json`,
 // body shape (no `stream`, no `store`), unary JSON decoding — plus the 401
 // retry on the unary endpoint to confirm the retry decision is taken from
 // the bare response status (no SSE wrap in the path).
-const compactJsonResponse = (overrides?: Partial<OpenAIResponsesResult>): Response =>
+const compactJsonResponse = (overrides?: Partial<ResponsesResult>): Response =>
   new Response(JSON.stringify({
     id: 'resp_x',
     object: 'response.compaction',
@@ -1016,11 +1119,11 @@ const compactJsonResponse = (overrides?: Partial<OpenAIResponsesResult>): Respon
     }),
   });
 
-describe('callCodexOpenAIResponsesCompact', () => {
+describe('callCodexResponsesCompact', () => {
   test('posts to /codex/responses/compact with application/json and no stream/store', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
-    const result = await callCodexOpenAIResponsesCompact({
+    const result = await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [{ type: 'message', role: 'user', content: 'hello' }] },
       headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
@@ -1043,11 +1146,39 @@ describe('callCodexOpenAIResponsesCompact', () => {
     expect(result.result.output[0]).toMatchObject({ id: 'cmp_x', type: 'compaction', encrypted_content: 'FULL_BLOB' });
   });
 
+  test('uses the Responses Lite transport contract for compaction', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    await callCodexResponsesCompact({
+      upstreamId,
+      account: activeAccount,
+      model: responsesLiteModel,
+      body: {
+        input: [{ type: 'message', role: 'user', content: 'hello' }],
+        instructions: 'Base instructions.',
+      },
+      headers: new Headers({ 'session-id': 'lite-thread' }),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    });
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    const body = await readJsonRequest(init) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(headers.get('x-openai-internal-codex-responses-lite')).toBe('true');
+    expect(body).not.toHaveProperty('instructions');
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(body.reasoning).toEqual({ context: 'all_turns' });
+    expect(input[0]).toMatchObject({ type: 'additional_tools', role: 'developer', tools: [] });
+    expect(input[1]).toMatchObject({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Base instructions.' }] });
+  });
+
   test('2xx persists quota snapshot via opts.call.waitUntil', async () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
-    await callCodexOpenAIResponsesCompact({
+    await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [] }, headers: new Headers(), effects: makeEffects(),
       call: { ...noopUpstreamCallOptions(), waitUntil },
@@ -1062,7 +1193,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken(), expires_in: 600 }), { status: 200 }))
       .mockResolvedValueOnce(compactJsonResponse());
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponsesCompact({
+    const result = await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [] }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
@@ -1080,7 +1211,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan(), expires_in: 600 }))
       .mockResolvedValueOnce(compactJsonResponse());
-    const result = await callCodexOpenAIResponsesCompact({
+    const result = await callCodexResponsesCompact({
       upstreamId,
       account: activeAccount,
       model,
@@ -1097,7 +1228,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(401, { error: { code: 'token_invalidated', message: 'session ended' } }));
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponsesCompact({
+    const result = await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [] }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
@@ -1113,7 +1244,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
       'x-codex-primary-reset-after-seconds': '3600',
       'x-codex-secondary-reset-after-seconds': '7200',
     }));
-    const result = await callCodexOpenAIResponsesCompact({
+    const result = await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [] }, headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
     });
@@ -1128,7 +1259,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(503, { error: 'unavailable' }));
     const effects = makeEffects();
-    const result = await callCodexOpenAIResponsesCompact({
+    const result = await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [] }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
