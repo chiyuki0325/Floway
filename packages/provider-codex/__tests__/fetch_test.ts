@@ -91,7 +91,7 @@ const sseResponse = (status = 200): Response => new Response(
     status,
     headers: new Headers({
       'content-type': 'text/event-stream',
-      'x-codex-active-limit': 'premium',
+      'x-codex-active-limit': 'codex',
       'x-codex-plan-type': 'plus',
       'x-codex-primary-used-percent': '42',
       'x-codex-primary-window-minutes': '300',
@@ -206,8 +206,8 @@ describe('callCodexResponses — upstream classification', () => {
     expect(result.ok).toBe(true);
     await flushMicrotasks();
     const stored = readQuotaEntry();
-    expect(stored?.premium.data.primary_used_percent).toBe(42);
-    expect(stored?.premium.data.ratelimited_until).toBeUndefined();
+    expect(stored?.codex.data.primary_used_percent).toBe(42);
+    expect(stored?.codex.data.ratelimited_until).toBeUndefined();
   });
 
   test('upstream body has store:false and stream:true forced even if caller passes otherwise', async () => {
@@ -964,8 +964,8 @@ describe('callCodexResponses — upstream classification', () => {
 
   test('429 → quota with ratelimited_until, return upstream 429', async () => {
     seedFreshAccessToken();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(429, { error: { type: 'usage_limit_reached', message: 'cap reached', resets_in_seconds: 7200 } }, {
-      'x-codex-active-limit': 'premium',
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(429, { error: { type: 'usage_limit_reached', message: 'cap reached', resets_at: 1780444800 } }, {
+      'x-codex-active-limit': 'codex',
       'x-codex-primary-reset-after-seconds': '3600',
       'x-codex-secondary-reset-after-seconds': '7200',
     }));
@@ -977,7 +977,7 @@ describe('callCodexResponses — upstream classification', () => {
     if (!result.ok) expect(result.response.status).toBe(429);
     await flushMicrotasks();
     const stored = readQuotaEntry();
-    expect(stored?.premium.data.ratelimited_until).toBeTruthy();
+    expect(stored?.codex.data.ratelimited_until).toBeTruthy();
   });
 
   test('5xx passes through without touching state', async () => {
@@ -1400,8 +1400,8 @@ describe('callCodexResponsesCompact', () => {
 
   test('429 → quota with ratelimited_until, return upstream 429', async () => {
     seedFreshAccessToken();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(429, { error: { type: 'usage_limit_reached', message: 'cap reached' } }, {
-      'x-codex-active-limit': 'premium',
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(429, { error: { type: 'usage_limit_reached', message: 'cap reached', resets_at: 1780444800 } }, {
+      'x-codex-active-limit': 'codex',
       'x-codex-primary-reset-after-seconds': '3600',
       'x-codex-secondary-reset-after-seconds': '7200',
     }));
@@ -1413,7 +1413,7 @@ describe('callCodexResponsesCompact', () => {
     if (!result.ok) expect(result.response.status).toBe(429);
     await flushMicrotasks();
     const stored = readQuotaEntry();
-    expect(stored?.premium.data.ratelimited_until).toBeTruthy();
+    expect(stored?.codex.data.ratelimited_until).toBeTruthy();
   });
 
   test('5xx passes through verbatim without touching state', async () => {

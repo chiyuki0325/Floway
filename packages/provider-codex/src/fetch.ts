@@ -657,9 +657,20 @@ const persistCodexQuotaObservation = (
   isRateLimited: boolean,
   policy: 'always' | 'when-present',
 ): void => {
-  const snapshot = parseCodexQuotaHeaders(response.headers, { now: new Date(), isRateLimited });
-  if (policy === 'when-present' && !hasCodexQuotaReading(snapshot)) return;
-  registerBackgroundWrite(opts, putCodexQuota(opts.upstreamId, opts.account.chatgptAccountId, snapshot));
+  if (!isRateLimited) {
+    const snapshots = parseCodexQuotaHeaders(response.headers, { now: new Date(), isRateLimited: false });
+    if (policy === 'when-present' && !Object.values(snapshots).some(hasCodexQuotaReading)) return;
+    registerBackgroundWrite(opts, putCodexQuota(opts.upstreamId, opts.account.chatgptAccountId, snapshots));
+    return;
+  }
+
+  const persist = async (): Promise<void> => {
+    const errorBody = await response.clone().text();
+    const snapshots = parseCodexQuotaHeaders(response.headers, { now: new Date(), isRateLimited: true, errorBody });
+    if (policy === 'when-present' && !Object.values(snapshots).some(hasCodexQuotaReading)) return;
+    await putCodexQuota(opts.upstreamId, opts.account.chatgptAccountId, snapshots);
+  };
+  registerBackgroundWrite(opts, persist());
 };
 
 const dispatchCodexImageCall = async (

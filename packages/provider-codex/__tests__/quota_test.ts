@@ -2,8 +2,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { createUpstreamStateRepoStub, type UpstreamStateRepoStub } from './upstream-state-repo.ts';
 import {
-  CODEX_QUOTA_UNKNOWN_ACTIVE_LIMIT,
-  codexQuotaActiveLimitKey,
   getCodexQuota,
   hasCodexQuotaReading,
   parseCodexQuotaHeaders,
@@ -15,6 +13,17 @@ import { initProviderRepo, type UpstreamRecord } from '@floway-dev/provider';
 
 const accountId = 'acc_1';
 const upstreamId = 'up_a';
+
+const parseDefaultQuota = (headers: Headers, options: Parameters<typeof parseCodexQuotaHeaders>[1]): CodexQuotaSnapshot => {
+  const snapshot = parseCodexQuotaHeaders(headers, options).codex;
+  if (!snapshot) throw new Error('expected default Codex quota family');
+  return snapshot;
+};
+
+const putSnapshot = (targetAccountId: string | undefined, snapshot: CodexQuotaSnapshot): Promise<void> => {
+  const limitId = snapshot.active_limit?.trim();
+  return putCodexQuota(upstreamId, targetAccountId, { [limitId === undefined || limitId === '' ? 'unknown' : limitId]: snapshot });
+};
 
 test('hasCodexQuotaReading ignores an observation timestamp without quota data', () => {
   expect(hasCodexQuotaReading({ observed_at: '2026-01-01T00:00:00Z' })).toBe(false);
@@ -77,10 +86,10 @@ describe('parseCodexQuotaHeaders', () => {
       'x-codex-credits-balance': '0',
     });
     const observedAt = new Date('2026-06-05T00:00:00.000Z');
-    const snapshot = parseCodexQuotaHeaders(headers, { now: observedAt, isRateLimited: false });
+    const snapshot = parseDefaultQuota(headers, { now: observedAt, isRateLimited: false });
     expect(snapshot).toMatchObject({
       observed_at: '2026-06-05T00:00:00.000Z',
-      active_limit: 'premium',
+      active_limit: 'codex',
       plan_type: 'plus',
       primary_used_percent: 42,
       primary_window_minutes: 300,
@@ -88,7 +97,7 @@ describe('parseCodexQuotaHeaders', () => {
       secondary_used_percent: 94,
       secondary_window_minutes: 10080,
       credits_has_credits: false,
-      credits_balance: 0,
+      credits_balance: '0',
     });
     expect(snapshot.ratelimited_until).toBeUndefined();
   });
@@ -97,11 +106,13 @@ describe('parseCodexQuotaHeaders', () => {
   // replaced, so the absolute instant wins and the offset is the fallback.
   test('prefers the absolute reset instant over the offset it replaced', () => {
     const headers = new Headers({
+      'x-codex-primary-used-percent': '1',
       'x-codex-primary-reset-at': '1780272000',
       'x-codex-primary-reset-after-seconds': '18000',
+      'x-codex-secondary-used-percent': '1',
       'x-codex-secondary-reset-after-seconds': '7200',
     });
-    const snapshot = parseCodexQuotaHeaders(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
+    const snapshot = parseDefaultQuota(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
     expect(snapshot.primary_reset_after_at).toBe(new Date(1780272000 * 1000).toISOString());
     // No absolute instant for the secondary, so the offset still dates it.
     expect(snapshot.secondary_reset_after_at).toBe('2026-06-05T02:00:00.000Z');
@@ -110,8 +121,8 @@ describe('parseCodexQuotaHeaders', () => {
   // Builds from the three days after the header landed sent RFC 3339 instead of
   // epoch seconds, which is why every client that reads it accepts both.
   test('reads an absolute reset instant sent as RFC 3339', () => {
-    const headers = new Headers({ 'x-codex-primary-reset-at': '2026-06-05T05:00:00.000Z' });
-    const snapshot = parseCodexQuotaHeaders(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
+    const headers = new Headers({ 'x-codex-primary-used-percent': '1', 'x-codex-primary-reset-at': '2026-06-05T05:00:00.000Z' });
+    const snapshot = parseDefaultQuota(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
     expect(snapshot.primary_reset_after_at).toBe('2026-06-05T05:00:00.000Z');
   });
 
@@ -123,7 +134,7 @@ describe('parseCodexQuotaHeaders', () => {
       'x-codex-secondary-reset-at': '',
       'x-codex-secondary-reset-after-seconds': '0',
     });
-    const snapshot = parseCodexQuotaHeaders(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
+    const snapshot = parseDefaultQuota(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
     expect(snapshot.secondary_reset_after_at).toBeUndefined();
   });
 
@@ -131,49 +142,92 @@ describe('parseCodexQuotaHeaders', () => {
   // zero balance rather than as nothing observed.
   test('reads a blank numeric header as absent rather than as zero', () => {
     const headers = new Headers({ 'x-codex-credits-balance': '', 'x-codex-secondary-used-percent': '  ' });
-    const snapshot = parseCodexQuotaHeaders(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
+    const snapshot = parseDefaultQuota(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
     expect(snapshot.credits_balance).toBeUndefined();
     expect(snapshot.secondary_used_percent).toBeUndefined();
   });
 
-  test('dates a 429 from the absolute instant when only that header arrives', () => {
+  test('uses the 429 error body for the recovery instant and plan', () => {
     const headers = new Headers({
+      'x-codex-plan-type': 'plus',
       'x-codex-primary-reset-at': '1780272000',
       'x-codex-secondary-reset-at': '1780358400',
     });
-    const snapshot = parseCodexQuotaHeaders(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: true });
-    expect(snapshot.ratelimited_until).toBe(new Date(1780358400 * 1000).toISOString());
+    const snapshot = parseDefaultQuota(headers, {
+      now: new Date('2026-06-05T00:00:00.000Z'),
+      isRateLimited: true,
+      errorBody: JSON.stringify({ error: { type: 'usage_limit_reached', plan_type: 'pro', resets_at: 1780444800 } }),
+    });
+    expect(snapshot.ratelimited_until).toBe(new Date(1780444800 * 1000).toISOString());
+    expect(snapshot.plan_type).toBe('pro');
   });
 
-  test('sets ratelimited_until from max(primary, secondary) reset window on 429', () => {
+  test('does not infer the top-level recovery instant from window headers', () => {
     const headers = new Headers({
       'x-codex-primary-reset-after-seconds': '3600',
       'x-codex-secondary-reset-after-seconds': '7200',
     });
-    const observedAt = new Date('2026-06-05T00:00:00.000Z');
-    const snapshot = parseCodexQuotaHeaders(headers, { now: observedAt, isRateLimited: true });
-    expect(snapshot.ratelimited_until).toBe('2026-06-05T02:00:00.000Z');
+    const snapshot = parseDefaultQuota(headers, { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: true });
+    expect(snapshot.ratelimited_until).toBeUndefined();
+  });
+
+  test('discovers every named limit family and preserves credit precision', () => {
+    const snapshots = parseCodexQuotaHeaders(new Headers({
+      'x-codex-primary-used-percent': '12.5',
+      'x-codex-limit-name': 'Core',
+      'x-codex-other-primary-used-percent': '80',
+      'x-codex-other-primary-window-minutes': '1440',
+      'x-codex-other-limit-name': 'Other',
+      'x-codex-credits-has-credits': '1',
+      'x-codex-credits-unlimited': '0',
+      'x-codex-credits-balance': '9007199254740993.000000001',
+    }), { now: new Date('2026-06-05T00:00:00.000Z'), isRateLimited: false });
+
+    expect(Object.keys(snapshots)).toEqual(['codex', 'codex_other']);
+    expect(snapshots.codex).toMatchObject({ active_limit: 'codex', limit_name: 'Core', primary_used_percent: 12.5 });
+    expect(snapshots.codex_other).toMatchObject({
+      active_limit: 'codex_other',
+      limit_name: 'Other',
+      primary_used_percent: 80,
+      primary_window_minutes: 1440,
+      credits_has_credits: true,
+      credits_unlimited: false,
+      credits_balance: '9007199254740993.000000001',
+    });
+  });
+
+  test('selects only the active family for a 429 and retains its error metadata', () => {
+    const snapshots = parseCodexQuotaHeaders(new Headers({
+      'x-codex-active-limit': 'codex_other',
+      'x-codex-primary-used-percent': '20',
+      'x-codex-other-primary-used-percent': '100',
+      'x-codex-promo-message': 'Upgrade for more usage',
+      'x-codex-rate-limit-reached-type': 'workspace_member_usage_limit_reached',
+    }), {
+      now: new Date('2026-06-05T00:00:00.000Z'),
+      isRateLimited: true,
+      errorBody: JSON.stringify({ error: { type: 'usage_limit_reached', resets_at: 1780444800 } }),
+    });
+
+    expect(snapshots).toEqual({
+      codex_other: {
+        observed_at: '2026-06-05T00:00:00.000Z',
+        active_limit: 'codex_other',
+        primary_used_percent: 100,
+        promo_message: 'Upgrade for more usage',
+        rate_limit_reached_type: 'workspace_member_usage_limit_reached',
+        ratelimited_until: new Date(1780444800 * 1000).toISOString(),
+      },
+    });
   });
 
   test('normalizes string headers at the provider boundary', () => {
     const observedAt = new Date('2026-06-05T00:00:00.000Z');
-    const snapshot = parseCodexQuotaHeaders(new Headers({
+    const snapshot = parseDefaultQuota(new Headers({
       'x-codex-active-limit': '  premium  ',
       'x-codex-plan-type': '   ',
     }), { now: observedAt, isRateLimited: false });
-    expect(snapshot).toEqual({ observed_at: '2026-06-05T00:00:00.000Z', active_limit: 'premium' });
-  });
-});
-
-describe('codexQuotaActiveLimitKey', () => {
-  test('uses the active_limit when present', () => {
-    expect(codexQuotaActiveLimitKey({ observed_at: 'now', active_limit: 'codex_bengalfox' })).toBe('codex_bengalfox');
-  });
-
-  test('falls back to unknown when the active_limit is missing or blank', () => {
-    expect(codexQuotaActiveLimitKey({ observed_at: 'now' })).toBe(CODEX_QUOTA_UNKNOWN_ACTIVE_LIMIT);
-    expect(codexQuotaActiveLimitKey({ observed_at: 'now', active_limit: '   ' })).toBe(CODEX_QUOTA_UNKNOWN_ACTIVE_LIMIT);
-    expect(codexQuotaActiveLimitKey({ observed_at: 'now', active_limit: 'constructor' })).toBe(CODEX_QUOTA_UNKNOWN_ACTIVE_LIMIT);
+    expect(snapshot).toEqual({ observed_at: '2026-06-05T00:00:00.000Z', active_limit: 'codex' });
   });
 });
 
@@ -224,7 +278,7 @@ describe('getCodexQuota', () => {
 describe('putCodexQuota', () => {
   test('persists the snapshot under its active limit, leaving the rest of the credential alone', async () => {
     const snap: CodexQuotaSnapshot = { observed_at: '2026-06-05T00:00:00.000Z', active_limit: 'premium', primary_used_percent: 42 };
-    await putCodexQuota(upstreamId, accountId, snap);
+    await putSnapshot(accountId, snap);
     expect(repo.saveState).toHaveBeenCalledTimes(1);
     expect(repo.saveState.mock.calls[0][0]).toBe(upstreamId);
     const written = (current!.state as CodexUpstreamState).accounts[0].quotaSnapshot;
@@ -233,17 +287,28 @@ describe('putCodexQuota', () => {
     expect({ ...(current!.state as CodexUpstreamState).accounts[0], quotaSnapshot: null }).toEqual({ ...baseAccount });
   });
 
-  test('preserves other active-limit buckets and replaces the matching bucket', async () => {
+  test('persists all parsed limit families in one state update', async () => {
+    const codex: CodexQuotaSnapshot = { observed_at: '2026-06-05T00:00:00.000Z', active_limit: 'codex', primary_used_percent: 10 };
+    const other: CodexQuotaSnapshot = { observed_at: '2026-06-05T00:00:00.000Z', active_limit: 'codex_other', primary_used_percent: 20 };
+    await putCodexQuota(upstreamId, accountId, { codex, codex_other: other });
+
+    const written = (current!.state as CodexUpstreamState).accounts[0].quotaSnapshot;
+    expect(written?.codex.data).toEqual(codex);
+    expect(written?.codex_other.data).toEqual(other);
+    expect(written?.codex.fetchedAt).toBe(written?.codex_other.fetchedAt);
+  });
+
+  test('preserves other limit families and replaces the matching family', async () => {
     const premium: CodexQuotaSnapshot = { observed_at: '2026-06-05T00:00:00.000Z', active_limit: 'premium', primary_used_percent: 10 };
     current = makeRecord({ accounts: [{ ...baseAccount, quotaSnapshot: { premium: { fetchedAt: 1, data: premium } } }] });
     const bengalfox: CodexQuotaSnapshot = { observed_at: '2026-06-05T01:00:00.000Z', active_limit: 'codex_bengalfox', primary_used_percent: 20 };
-    await putCodexQuota(upstreamId, accountId, bengalfox);
+    await putSnapshot(accountId, bengalfox);
     let written = (current!.state as CodexUpstreamState).accounts[0].quotaSnapshot;
     expect(written?.premium.data).toEqual(premium);
     expect(written?.codex_bengalfox.data).toEqual(bengalfox);
 
     const nextPremium: CodexQuotaSnapshot = { observed_at: '2026-06-05T02:00:00.000Z', active_limit: 'premium', primary_used_percent: 30 };
-    await putCodexQuota(upstreamId, accountId, nextPremium);
+    await putSnapshot(accountId, nextPremium);
     written = (current!.state as CodexUpstreamState).accounts[0].quotaSnapshot;
     expect(Object.keys(written ?? {}).sort()).toEqual(['codex_bengalfox', 'premium']);
     expect(written?.premium.data).toEqual(nextPremium);
@@ -252,19 +317,19 @@ describe('putCodexQuota', () => {
 
   test('uses the unknown key when active_limit is absent', async () => {
     const snap: CodexQuotaSnapshot = { observed_at: '2026-06-05T00:00:00.000Z', primary_used_percent: 42 };
-    await putCodexQuota(upstreamId, accountId, snap);
+    await putSnapshot(accountId, snap);
     const written = (current!.state as CodexUpstreamState).accounts[0].quotaSnapshot;
     expect(written?.unknown.data).toEqual(snap);
   });
 
   test('throws when the upstream disappeared mid-flight', async () => {
     current = null;
-    await expect(putCodexQuota(upstreamId, accountId, { observed_at: 'now' })).rejects.toThrow(/disappeared/);
+    await expect(putSnapshot(accountId, { observed_at: 'now' })).rejects.toThrow(/disappeared/);
     expect(repo.writes).toEqual([]);
   });
 
   test('throws when the requested account is not in the pool', async () => {
-    await expect(putCodexQuota(upstreamId, 'acc_other', { observed_at: 'now' })).rejects.toThrow(/not found in upstream/);
+    await expect(putSnapshot('acc_other', { observed_at: 'now' })).rejects.toThrow(/not found in upstream/);
     expect(repo.writes).toEqual([]);
   });
 });

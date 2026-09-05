@@ -452,7 +452,7 @@ const en = {
           window: { primary: 'Primary', secondary: 'Secondary' },
           rateLimited: 'Rate limited',
           rateLimitedDetail: 'This upstream is refusing requests until {{time}}',
-          credits: '{{balance, number}} credits',
+          credits: '{{balance}} credits',
           creditsDetail: 'Credit balance on the ChatGPT account',
           cost: 'Charged to this account',
           costLast4Weeks: 'Charged to this account in the last 4 weeks',
@@ -846,7 +846,7 @@ const en = {
         },
         codex: {
           activeLimit: 'active limit',
-          credits: 'credits: {{balance, number}}',
+          credits: 'credits: {{balance}}',
           noCredits: 'no credits',
           noSnapshot: 'No quota snapshots yet - Codex calls populate them.',
           observed: 'Observed {{time}}',

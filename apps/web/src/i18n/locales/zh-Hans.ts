@@ -428,7 +428,7 @@ const zhHansCN = {
           window: { primary: '主窗口', secondary: '次窗口' },
           rateLimited: '限流',
           rateLimitedDetail: '该上游在 {{time}} 之前拒绝请求',
-          credits: '{{balance, number}} 点额度',
+          credits: '{{balance}} 点额度',
           creditsDetail: 'ChatGPT 账号的额度余额',
           cost: '该账号已产生的费用',
           costLast4Weeks: '该账号最近 4 周产生的费用',
@@ -803,7 +803,7 @@ const zhHansCN = {
         },
         codex: {
           activeLimit: '当前限额',
-          credits: '额度：{{balance, number}}',
+          credits: '额度：{{balance}}',
           noCredits: '无额度',
           noSnapshot: '尚无配额快照，Codex 调用会写入。',
           observed: '观测于 {{time}}',

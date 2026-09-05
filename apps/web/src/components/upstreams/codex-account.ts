@@ -88,7 +88,7 @@ export const quotaEntries = (quota: CodexQuotaSnapshotMap | null | undefined, no
     .toSorted(([left], [right]) => left.localeCompare(right))
     .map(([key, snapshot]) => ({
       key,
-      label: snapshot.active_limit ?? key,
+      label: snapshot.limit_name ?? snapshot.active_limit ?? key,
       observedAt: snapshot.observed_at,
       rateLimitedUntil: stillRateLimited(snapshot.ratelimited_until, now),
       windows: [
