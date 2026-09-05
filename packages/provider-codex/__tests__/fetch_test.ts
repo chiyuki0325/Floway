@@ -375,6 +375,8 @@ describe('callCodexResponses — upstream classification', () => {
       thread_id: 'downstream-session',
       turn_id: expect.stringMatching(UUID_V7_RE),
       window_id: 'downstream-window',
+      window_number: 0,
+      context_window_id: expect.stringMatching(UUID_V7_RE),
       request_kind: 'turn',
     });
     // 'turn-meta' is not valid JSON; the unparseable blob is dropped and we
@@ -744,6 +746,8 @@ describe('callCodexResponses — upstream classification', () => {
           'x-codex-window-id': 'thread-1:2',
           'x-codex-turn-metadata': JSON.stringify({
             window_id: 'thread-1:2',
+            window_number: 2,
+            context_window_id: '019cba13-7d2c-75e2-bf79-c970d7bdfe42',
             request_kind: 'compaction',
             compaction: { trigger: 'auto', reason: 'context_limit' },
             turn_started_at_unix_ms: 1700000000002,
@@ -757,6 +761,8 @@ describe('callCodexResponses — upstream classification', () => {
         'x-codex-window-id': 'thread-1:0',
         'x-codex-turn-metadata': JSON.stringify({
           window_id: 'thread-1:0',
+          window_number: 0,
+          context_window_id: '019cba13-7d2c-75e1-88d4-91055dc0d7a9',
           request_kind: 'turn',
           turn_started_at_unix_ms: 1700000000000,
         }),
@@ -774,6 +780,8 @@ describe('callCodexResponses — upstream classification', () => {
     // The window advances on every auto-compaction and the advanced value
     // reaches us in the body alone.
     expect(turnMetadata.window_id).toBe('thread-1:2');
+    expect(turnMetadata.window_number).toBe(2);
+    expect(turnMetadata.context_window_id).toBe('019cba13-7d2c-75e2-bf79-c970d7bdfe42');
     expect(headers.get('x-codex-window-id')).toBe('thread-1:2');
   });
 
@@ -849,7 +857,7 @@ describe('callCodexResponses — upstream classification', () => {
 
   test('401 other → refresh + retry once, then bubble persistent 401', async () => {
     seedFreshAccessToken();
-    vi.spyOn(globalThis, 'fetch')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }));
@@ -861,6 +869,13 @@ describe('callCodexResponses — upstream classification', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.response.status).toBe(401);
     expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2');
+    const firstMetadata = JSON.parse(new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers).get('x-codex-turn-metadata') ?? 'null') as Record<string, unknown>;
+    const retryMetadata = JSON.parse(new Headers((fetchSpy.mock.calls[2][1] as RequestInit).headers).get('x-codex-turn-metadata') ?? 'null') as Record<string, unknown>;
+    expect(firstMetadata.window_number).toBe(0);
+    expect(retryMetadata.window_number).toBe(0);
+    expect(firstMetadata.context_window_id).toMatch(UUID_V7_RE);
+    expect(retryMetadata.context_window_id).toBe(firstMetadata.context_window_id);
+    expect(retryMetadata.turn_id).not.toBe(firstMetadata.turn_id);
   });
 
   test('429 → quota with ratelimited_until, return upstream 429', async () => {
