@@ -306,7 +306,7 @@ describe('ensureCodexAccessToken', () => {
     expect(repo.writes).toEqual([]);
   });
 
-  test('invalid_grant with a sibling rotation in flight → returns the sibling-minted access token, no persist', async () => {
+  test('case-insensitive invalid_grant with a sibling rotation in flight → returns the sibling-minted access token, no persist', async () => {
     // Simulate the race: between our pre-mint read and the upstream rejecting
     // our refresh_token, a sibling worker won the rotation and wrote rt_v2 +
     // at_sibling. Re-read on recovery observes the new pair scoped to the same
@@ -317,7 +317,7 @@ describe('ensureCodexAccessToken', () => {
       current = makeRecord({ accounts: [{ ...baseAccount, refresh_token: 'rt_v2', accessToken: siblingEntry }] });
       return current;
     });
-    const mint = vi.fn().mockRejectedValue(new CodexOAuthSessionTerminatedError({ code: 'invalid_grant', message: 'replayed' }));
+    const mint = vi.fn().mockRejectedValue(new CodexOAuthSessionTerminatedError({ code: 'Invalid_Grant', message: 'replayed' }));
 
     const out = await ensureCodexAccessToken(upstreamId, accountId, mint);
     expect(out).toEqual(siblingEntry);

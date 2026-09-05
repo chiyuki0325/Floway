@@ -39,9 +39,9 @@ export const buildCodexAuthorizeUrl = (input: { state: string; codeChallenge: st
 // Terminal error: refresh_token is dead, operator must re-import. Distinct
 // from generic OAuth 4xx so callers can react to session-termination
 // separately from a transient upstream message. `code` carries the raw OAuth
-// `error` value (`invalid_grant`, `app_session_terminated`, etc.) so the
-// refresh-race recovery in the access-token module can single out
-// `invalid_grant` — the only terminal code that might mean "a sibling
+// nested `error` or top-level `code` value so the refresh-race recovery in
+// the access-token module can single out `invalid_grant` — the only terminal
+// code that might mean "a sibling
 // worker just rotated the refresh token, and our copy is stale" — from
 // codes that signal genuine credential death under any race scenario.
 export class CodexOAuthSessionTerminatedError extends Error {
@@ -55,39 +55,23 @@ export class CodexOAuthSessionTerminatedError extends Error {
   }
 }
 
-// Terminal codes accepted on the authorization-code exchange. This is OUR
-// classification (codex-rs/login/src/server.rs does not split errors into
-// terminal vs recoverable on this path), but `app_session_terminated`
-// observably means the upstream account is gone — there is nothing the
-// operator can do besides re-import after fixing the underlying account.
-// `invalid_grant` on exchange typically means the operator pasted a stale
-// or wrong callback URL, which is recoverable by restarting the PKCE flow
-// rather than re-importing, so it stays out of this set.
-const EXCHANGE_TERMINAL_OAUTH_CODES: ReadonlySet<string> = new Set([
-  'app_session_terminated',
+const PERMANENT_REFRESH_CODES: ReadonlySet<string> = new Set([
+  'refresh_token_expired',
+  'refresh_token_reused',
+  'refresh_token_invalidated',
 ]);
 
-// Terminal codes on the refresh path: every one of these signals a dead
-// refresh_token that only operator re-import recovers. Aligned with
-// sub2api's `isNonRetryableRefreshError`
-// (backend/internal/service/token_refresh_service.go:429-451), which shares
-// the same list across OpenAI/Claude/Gemini OAuth — Codex is OpenAI OAuth,
-// so the set carries over verbatim. `invalid_grant` is included even though
-// the refresh-race recovery in access-token.ts may re-classify it
-// when a sibling rotation is detected; from the OAuth wire's perspective
-// it is still a terminal signal.
-const REFRESH_TERMINAL_OAUTH_CODES: ReadonlySet<string> = new Set([
-  'app_session_terminated',
-  'invalid_grant',
-  'invalid_refresh_token',
-  'invalid_client',
-  'unauthorized_client',
-  'access_denied',
-]);
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/login/src/auth/manager.rs#L1610-L1632
+const isPermanentRefreshFailure = (status: number, code: string | null): boolean => {
+  const normalizedCode = code?.toLowerCase();
+  return status === 401
+    || (status === 400 && normalizedCode === 'invalid_grant')
+    || (normalizedCode !== undefined && PERMANENT_REFRESH_CODES.has(normalizedCode));
+};
 
 const codexTokenRequest = async (
   init: RequestInit,
-  terminalCodes: ReadonlySet<string>,
+  classifyPermanentFailure: (status: number, code: string | null) => boolean,
   fetcher: Fetcher,
 ): Promise<Record<string, unknown>> => {
   const response = await fetcher(CODEX_OAUTH_TOKEN_URL, init);
@@ -112,11 +96,12 @@ const codexTokenRequest = async (
       if (typeof err.code === 'string') code = err.code;
       if (typeof err.message === 'string') message = err.message;
     }
+    if (code === null && typeof root?.code === 'string') code = root.code;
     // Some OpenAI errors put the human-readable text under top-level `.detail`.
     if (message === null && typeof root?.detail === 'string') message = root.detail as string;
     message ??= rawText.slice(0, 256);
-    if (code && terminalCodes.has(code)) {
-      throw new CodexOAuthSessionTerminatedError({ code, message });
+    if (classifyPermanentFailure(response.status, code)) {
+      throw new CodexOAuthSessionTerminatedError({ code: code ?? `http_${response.status}`, message });
     }
     throw new Error(`Codex OAuth /token returned ${response.status}: ${message}`);
   }
@@ -162,7 +147,7 @@ export const exchangeCodexAuthorizationCode = async (opts: { code: string; codeV
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
-  }, EXCHANGE_TERMINAL_OAUTH_CODES, opts.fetcher);
+  }, () => false, opts.fetcher);
   return {
     access_token: requiredToken(root, 'access_token'),
     refresh_token: requiredToken(root, 'refresh_token'),
@@ -178,7 +163,7 @@ export const refreshCodexAccessToken = async (refreshToken: string, fetcher: Fet
   // can mean a genuinely revoked/expired refresh_token, *or* that a sibling
   // worker raced us, won the rotation, and our copy is now stale. The
   // access-token module's `recoverFromRefreshRace` distinguishes by re-reading
-  // upstream state; the other codes here always mean credential death.
+  // upstream state. Other failures follow Codex's status-and-code classification.
   const root = await codexTokenRequest({
     method: 'POST',
     headers: {
@@ -191,7 +176,7 @@ export const refreshCodexAccessToken = async (refreshToken: string, fetcher: Fet
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
     }),
-  }, REFRESH_TERMINAL_OAUTH_CODES, fetcher);
+  }, isPermanentRefreshFailure, fetcher);
   const accessToken = optionalToken(root, 'access_token');
   const rotatedRefreshToken = optionalToken(root, 'refresh_token');
   const idToken = optionalToken(root, 'id_token');

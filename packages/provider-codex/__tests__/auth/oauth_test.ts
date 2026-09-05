@@ -39,9 +39,9 @@ describe('exchangeCodexAuthorizationCode', () => {
     expect(params.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
   });
 
-  test('throws session-terminated on app_session_terminated', async () => {
+  test('keeps app_session_terminated generic on authorization-code exchange', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(400, { error: { code: 'app_session_terminated', message: 'Session ended' } }));
-    await expect(exchangeCodexAuthorizationCode({ code: 'CODE', codeVerifier: 'VER', fetcher: directFetcher })).rejects.toBeInstanceOf(CodexOAuthSessionTerminatedError);
+    await expect(exchangeCodexAuthorizationCode({ code: 'CODE', codeVerifier: 'VER', fetcher: directFetcher })).rejects.toThrow(/returned 400/);
   });
 
   test('throws generic error on other 4xx, message includes status', async () => {
@@ -84,13 +84,35 @@ describe('refreshCodexAccessToken', () => {
     await expect(refreshCodexAccessToken('rt_old', directFetcher)).rejects.toThrow(new RegExp(`malformed ${key}`));
   });
 
-  test('session-terminated → CodexOAuthSessionTerminatedError', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(400, { error: { code: 'app_session_terminated', message: 'gone' } }));
+  test.each([
+    ['nested code', 400, { error: { code: 'refresh_token_expired', message: 'expired' } }],
+    ['string error', 400, { error: 'refresh_token_reused' }],
+    ['top-level code', 500, { code: 'refresh_token_invalidated', detail: 'invalidated' }],
+  ])('classifies permanent refresh failure from %s', async (_shape, status, body) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(status, body));
     await expect(refreshCodexAccessToken('rt_dead', directFetcher)).rejects.toBeInstanceOf(CodexOAuthSessionTerminatedError);
   });
 
-  test('invalid_grant → CodexOAuthSessionTerminatedError (refresh-only)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(400, { error: { code: 'invalid_grant', message: 'Your refresh token has already been used to generate a new access token. Please try signing in again.' } }));
-    await expect(refreshCodexAccessToken('rt_replayed', directFetcher)).rejects.toBeInstanceOf(CodexOAuthSessionTerminatedError);
+  test('classifies every HTTP 401 refresh failure as permanent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(401, { detail: 'unauthorized' }));
+    const error = await refreshCodexAccessToken('rt_dead', directFetcher).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CodexOAuthSessionTerminatedError);
+    expect((error as CodexOAuthSessionTerminatedError).code).toBe('http_401');
+  });
+
+  test('classifies case-insensitive invalid_grant on HTTP 400 as permanent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(400, { error: { code: 'Invalid_Grant', message: 'replayed' } }));
+    const error = await refreshCodexAccessToken('rt_replayed', directFetcher).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CodexOAuthSessionTerminatedError);
+    expect((error as CodexOAuthSessionTerminatedError).code).toBe('Invalid_Grant');
+  });
+
+  test.each([
+    [400, { error: { code: 'app_session_terminated', message: 'gone' } }],
+    [500, { error: { code: 'invalid_grant', message: 'server failure' } }],
+    [503, { error: { code: 'temporarily_unavailable', message: 'retry' } }],
+  ])('keeps non-permanent HTTP %s refresh failure transient', async (status, body) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorResponse(status, body));
+    await expect(refreshCodexAccessToken('rt_retry', directFetcher)).rejects.toThrow(new RegExp(`returned ${status}`));
   });
 });
