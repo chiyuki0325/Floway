@@ -10,8 +10,8 @@ import {
   CODEX_RESPONSES_PATH,
   CODEX_USER_AGENT,
 } from './constants.ts';
-import { sha256JsonUuid, uuidV7 } from './ids.ts';
-import { codexPlanSupportsImages } from './models.ts';
+import { sha256JsonUuid, UUID_V5_OID_NAMESPACE, uuidV5, uuidV7 } from './ids.ts';
+import { codexModelUsesResponsesLite, codexPlanSupportsImages } from './models.ts';
 import {
   hasCodexQuotaReading,
   parseCodexQuotaHeaders,
@@ -20,7 +20,7 @@ import {
 import type { CodexAccessTokenEntry, CodexAccountCredential } from './state.ts';
 import { isEventStreamMediaType } from '@floway-dev/protocols/common';
 import type { ImagesGenerationsPayload } from '@floway-dev/protocols/images';
-import type { CanonicalResponsesCompactPayload, CanonicalResponsesPayload, ResponsesCompactionResult, ResponsesInputItem, ResponsesStreamEvent } from '@floway-dev/protocols/responses';
+import type { CanonicalResponsesCompactPayload, CanonicalResponsesPayload, ResponsesCompactionResult, ResponsesInputAdditionalToolsItem, ResponsesInputItem, ResponsesNamespaceTool, ResponsesStreamEvent, ResponsesTool } from '@floway-dev/protocols/responses';
 import { parseResponsesStream } from '@floway-dev/protocols/responses';
 import { jsonRequestBody, serializeOpenAIImagesEditsJsonPayload, type ImagesEditsRequest, type ProviderCallResult, type ProviderModel, type ProviderStreamResult, streamingProviderCall, type UpstreamCallOptions } from '@floway-dev/provider';
 
@@ -369,6 +369,86 @@ const buildCodexClientMetadata = (identity: CodexRequestIdentity, turnMetadataJs
   'x-codex-turn-metadata': turnMetadataJson,
 });
 
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/tools/src/tool_spec.rs#L95-L142
+const responsesLiteTools = (tools: readonly ResponsesTool[]): ResponsesTool[] => {
+  const functions: ResponsesNamespaceTool = {
+    type: 'namespace',
+    name: 'functions',
+    description: '',
+    tools: [],
+  };
+  const projected: ResponsesTool[] = [];
+  let functionsIndex: number | null = null;
+
+  for (const tool of tools) {
+    if (tool.type === 'function' || tool.type === 'custom') {
+      functions.tools.push(tool);
+      functionsIndex ??= projected.length;
+    } else if (tool.type === 'namespace' && tool.name === 'functions') {
+      if (tool.description.trim().length > 0) functions.description = tool.description;
+      functions.tools.push(...tool.tools);
+      functionsIndex ??= projected.length;
+    } else {
+      projected.push(tool);
+    }
+  }
+
+  if (functionsIndex !== null && functions.tools.length > 0) {
+    projected.splice(functionsIndex, 0, functions);
+  }
+  return projected;
+};
+
+const isResponsesLiteInput = (input: readonly ResponsesInputItem[]): boolean => {
+  const first = input[0];
+  return first?.type === 'additional_tools'
+    && typeof first.id === 'string'
+    && first.id.startsWith('at_');
+};
+
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L936-L975
+const projectResponsesLiteBody = (
+  source: Record<string, unknown>,
+  identity: CodexRequestIdentity,
+): Record<string, unknown> => {
+  const body = { ...source };
+  const input = [...(source.input as ResponsesInputItem[])];
+
+  if (!isResponsesLiteInput(input)) {
+    const tools = responsesLiteTools(Array.isArray(source.tools) ? source.tools as ResponsesTool[] : []);
+    const prefixNamespace = uuidV5(identity.threadId, UUID_V5_OID_NAMESPACE);
+    const additionalTools: ResponsesInputAdditionalToolsItem = {
+      type: 'additional_tools',
+      role: 'developer',
+      tools,
+      id: `at_${uuidV5(JSON.stringify(tools), prefixNamespace)}`,
+    };
+    const prefix: ResponsesInputItem[] = [additionalTools];
+    if (typeof source.instructions === 'string' && source.instructions.length > 0) {
+      prefix.push({
+        type: 'message',
+        id: `msg_${uuidV5(source.instructions, prefixNamespace)}`,
+        role: 'developer',
+        content: [{ type: 'input_text', text: source.instructions }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ['model.base_instructions'],
+        },
+      } as ResponsesInputItem);
+    }
+    input.unshift(...prefix);
+  }
+
+  body.input = input;
+  body.parallel_tool_calls = false;
+  body.reasoning = {
+    ...(isPlainObject(source.reasoning) ? source.reasoning : {}),
+    context: 'all_turns',
+  };
+  delete body.instructions;
+  delete body.tools;
+  return body;
+};
+
 const buildCodexResponsesBody = (
   opts: CallCodexResponsesOptions,
   identity: CodexRequestIdentity,
@@ -378,7 +458,7 @@ const buildCodexResponsesBody = (
   for (const [k, v] of Object.entries(clientCodexClientMetadata(opts.body))) {
     if (!IDENTITY_MIRRORED_CLIENT_METADATA_KEYS.has(k)) callerExtras[k] = v;
   }
-  const body: Record<string, unknown> = {
+  const source: Record<string, unknown> = {
     ...(opts.body as unknown as Record<string, unknown>),
     model: opts.model.id,
     store: false,
@@ -388,6 +468,9 @@ const buildCodexResponsesBody = (
       ...callerExtras,
     },
   };
+  const body = codexModelUsesResponsesLite(opts.model)
+    ? projectResponsesLiteBody(source, identity)
+    : source;
   if (body.prompt_cache_key === undefined) body.prompt_cache_key = identity.threadId;
   return body;
 };
@@ -421,6 +504,10 @@ const dispatchCodexHttpCall = async (
   headers.set('x-client-request-id', identity.clientRequestId);
   headers.set('x-codex-window-id', identity.windowId);
   if (turnMetadataJson !== null) headers.set('x-codex-turn-metadata', turnMetadataJson);
+  // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L2129-L2135
+  if (codexModelUsesResponsesLite(opts.model) && (path === CODEX_RESPONSES_PATH || path === CODEX_RESPONSES_COMPACT_PATH)) {
+    headers.set('x-openai-internal-codex-responses-lite', 'true');
+  }
 
   const response = await opts.call.wrapUpstreamCall(() => opts.call.fetcher(`${CODEX_BACKEND_BASE}${path}`, {
     method: 'POST',
@@ -584,12 +671,16 @@ const performUnaryCompactCall = async (
   const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata);
   const metadata: CodexTurnMetadataOptions = { requestKind: 'compaction' };
   const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
+  const source = { ...opts.body, model: opts.model.id } as Record<string, unknown>;
+  const body = codexModelUsesResponsesLite(opts.model)
+    ? projectResponsesLiteBody(source, identity)
+    : source;
   const response = await dispatchCodexHttpCall(
     opts,
     accessToken.token,
     CODEX_RESPONSES_COMPACT_PATH,
     'application/json',
-    { ...opts.body, model: opts.model.id },
+    body,
     identity,
     turnMetadataJson.header,
   );

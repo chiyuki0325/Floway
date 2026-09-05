@@ -56,14 +56,12 @@ export const CODEX_IMAGE_MODEL_ID = 'gpt-image-2';
 export const CODEX_IMAGES_GENERATIONS_PATH = '/codex/images/generations';
 export const CODEX_IMAGES_EDITS_PATH = '/codex/images/edits';
 
-// codex_cli_rs version we impersonate on the data plane. Bumped against the
-// latest stable release at https://github.com/openai/codex/releases — newer entries in
-// /codex/models gate themselves behind a `minimal_client_version` (e.g.
-// the gpt-5.6 Sol / Terra / Luna family needs 0.144.0+), so a stale value
-// here silently truncates the model list. The same value flows into both
-// the `?client_version=` query param and the User-Agent so the upstream sees
-// a self-consistent client.
-export const CODEX_CLI_VERSION = '0.144.1';
+// codex_cli_rs version we impersonate on the data plane. Newer entries in
+// /codex/models gate themselves behind `minimal_client_version`, so a stale
+// value silently truncates the model list. Keep this aligned with the bundled
+// Codex catalog and its Responses wire capabilities.
+// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/Cargo.toml#L150
+export const CODEX_CLI_VERSION = '0.153.4';
 
 // Shared official Codex data-plane identity for /codex/models and
 // /codex/responses. The User-Agent intentionally includes Codex's normal

@@ -20,6 +20,11 @@ export interface CodexRawModel {
   input_modalities?: readonly ('text' | 'image')[];
   reasoning_efforts?: readonly string[];
   default_reasoning_effort?: string;
+  use_responses_lite?: boolean;
+}
+
+export interface CodexProviderModelData {
+  useResponsesLite: true;
 }
 
 // `fetcher` is required so the catalog refresh traverses the same proxy/
@@ -46,6 +51,9 @@ export const fetchCodexCatalog = async (opts: { accessToken: string; accountId: 
 };
 
 const isPlainRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+export const codexModelUsesResponsesLite = (model: ProviderModel): boolean =>
+  isPlainRecord(model.providerData) && model.providerData.useResponsesLite === true;
 
 // Fail loud on malformed upstream catalog responses: a missing field
 // signals an upstream contract change we need to notice. New optional
@@ -92,6 +100,13 @@ const assertRawModel = (value: unknown): CodexRawModel => {
     raw.default_reasoning_effort = value.default_reasoning_level;
   }
 
+  if (value.use_responses_lite !== undefined) {
+    if (typeof value.use_responses_lite !== 'boolean') {
+      throw new TypeError(`Codex model entry ${slug} use_responses_lite malformed`);
+    }
+    raw.use_responses_lite = value.use_responses_lite;
+  }
+
   return raw;
 };
 
@@ -132,6 +147,7 @@ export const codexRawToProviderModel = (raw: CodexRawModel, enabledFlags: Readon
     },
     endpoints: { responses: {} },
     enabledFlags,
+    ...(raw.use_responses_lite === true ? { providerData: { useResponsesLite: true } satisfies CodexProviderModelData } : {}),
     ...(pricing ? { pricing } : {}),
     ...(Object.keys(chat).length > 0 ? { chat } : {}),
   };

@@ -209,19 +209,19 @@ describe('createCodexProvider', () => {
     const instance = createCodexProvider(recordWithOverride);
     const models = await instance.instance.getProvidedModels(directFetcher);
     for (const m of models) {
-      expect(m.enabledFlags.has('rewrite-system-to-developer')).toBe(true);
+      expect(m.enabledFlags.has('rewrite-system-to-developer')).toBe(false);
       expect(m.enabledFlags.has('responses-web-search-shim')).toBe(true);
     }
   });
 
-  test('callResponses preserves developer messages on the Codex wire', async () => {
+  test('callResponses preserves system and developer messages without synthetic instructions', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
     const instance = createCodexProvider(baseRecord);
     const result = await instance.instance.callResponses(
       stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } }),
       {
         input: [
-          { type: 'message', role: 'developer', content: 'base instructions' },
+          { type: 'message', role: 'system', content: 'system instructions' },
           { type: 'message', role: 'user', content: 'hi' },
           { type: 'message', role: 'developer', content: 'inline instructions' },
         ],
@@ -236,9 +236,9 @@ describe('createCodexProvider', () => {
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
     if (init === undefined) throw new Error('expected a Codex upstream request');
     const body = await readJsonRequest(init) as Record<string, unknown>;
-    expect(body.instructions).toBe("You're a helpful assistant.");
+    expect(body).not.toHaveProperty('instructions');
     expect(body.input).toEqual([
-      { type: 'message', role: 'developer', content: 'base instructions' },
+      { type: 'message', role: 'system', content: 'system instructions' },
       { type: 'message', role: 'user', content: 'hi' },
       { type: 'message', role: 'developer', content: 'inline instructions' },
     ]);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import bundledCatalog from '../../../src/data-plane/codex/catalog/bundled.json' with { type: 'json' };
 
-const bundled = bundledCatalog as { models: { slug: string }[] };
+const bundled = bundledCatalog as { models: { slug: string; minimal_client_version?: string; use_responses_lite?: boolean }[] };
 
 describe('resolveCodexCatalog', () => {
   const originalFetch = globalThis.fetch;
@@ -33,6 +33,14 @@ describe('resolveCodexCatalog', () => {
   ])('does not classify a non-Codex catalog caller %s', async userAgent => {
     const { isCodexUserAgent } = await import('../../../src/data-plane/codex/catalog.ts');
     expect(isCodexUserAgent(userAgent)).toBe(false);
+  });
+
+  it('bundles the Responses Lite catalog shipped with Codex 0.153.4', () => {
+    expect(bundled.models).toContainEqual(expect.objectContaining({
+      slug: 'gpt-6-astra',
+      minimal_client_version: '0.153.0',
+      use_responses_lite: true,
+    }));
   });
 
   it('falls back to bundled when user-agent is missing', async () => {

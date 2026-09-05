@@ -15,6 +15,12 @@ const makeEffects = (): CodexCallEffects => ({
 
 const activeAccount: CodexAccountCredential = { chatgptAccountId: 'acc', refresh_token: 'rt_v1', state: 'active', state_updated_at: '2026-01-01T00:00:00Z', openaiDeviceId: '11111111-2222-4333-8444-555555555555', accessToken: null, quotaSnapshot: null };
 const model = stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } });
+const responsesLiteModel = stubProviderModel({
+  id: 'gpt-6-astra',
+  display_name: 'gpt-6-astra',
+  endpoints: { responses: {} },
+  providerData: { useResponsesLite: true },
+});
 const imageModel = stubProviderModel({ id: 'gpt-image-2', display_name: 'GPT-Image-2', kind: 'image', endpoints: { imagesGenerations: {}, imagesEdits: {} } });
 
 const upstreamId = 'up_a';
@@ -216,6 +222,103 @@ describe('callCodexResponses — upstream classification', () => {
     expect(body.model).toBe('gpt-5.4');
     expect(body.store).toBe(false);
     expect(body.stream).toBe(true);
+  });
+
+  test('projects Responses Lite instructions and tools into stable input prefixes', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    const request = {
+      upstreamId,
+      account: activeAccount,
+      model: responsesLiteModel,
+      body: {
+        instructions: 'Base instructions.',
+        input: [{ type: 'message', role: 'user', content: 'hello' }],
+        tools: [
+          { type: 'web_search' },
+          { type: 'function', name: 'exec', parameters: { type: 'object' } },
+          {
+            type: 'namespace',
+            name: 'functions',
+            description: 'Existing functions.',
+            tools: [{ type: 'custom', name: 'shell', description: 'Run shell.' }],
+          },
+          { type: 'namespace', name: 'apps', description: 'Apps.', tools: [] },
+        ],
+        parallel_tool_calls: true,
+        reasoning: { effort: 'high', context: 'current_turn' },
+        stream: true,
+      },
+      headers: new Headers({ 'session-id': 'lite-thread' }),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    } as unknown as Parameters<typeof callCodexResponses>[0];
+
+    await callCodexResponses(request);
+    await callCodexResponses({ ...request, headers: new Headers({ 'session-id': 'lite-thread' }) });
+
+    const firstInit = fetchSpy.mock.calls[0][1] as RequestInit;
+    const first = await readJsonRequest(firstInit) as Record<string, unknown>;
+    const second = await readJsonRequest(fetchSpy.mock.calls[1][1] as RequestInit) as Record<string, unknown>;
+    const input = first.input as Array<Record<string, unknown>>;
+    const additionalTools = input[0] as Record<string, unknown>;
+    const tools = additionalTools.tools as Array<Record<string, unknown>>;
+
+    expect(new Headers(firstInit.headers).get('x-openai-internal-codex-responses-lite')).toBe('true');
+    expect(first).not.toHaveProperty('instructions');
+    expect(first).not.toHaveProperty('tools');
+    expect(first.parallel_tool_calls).toBe(false);
+    expect(first.reasoning).toEqual({ effort: 'high', context: 'all_turns' });
+    expect(input[0]).toMatchObject({ type: 'additional_tools', role: 'developer', id: expect.stringMatching(/^at_[0-9a-f-]{36}$/) });
+    expect(input[1]).toEqual({
+      type: 'message',
+      id: expect.stringMatching(/^msg_[0-9a-f-]{36}$/),
+      role: 'developer',
+      content: [{ type: 'input_text', text: 'Base instructions.' }],
+      internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'] },
+    });
+    expect(input[2]).toEqual({ type: 'message', role: 'user', content: 'hello' });
+    expect(tools.map(tool => `${String(tool.type)}:${String(tool.name ?? '')}`)).toEqual([
+      'web_search:',
+      'namespace:functions',
+      'namespace:apps',
+    ]);
+    expect(tools[1]).toEqual({
+      type: 'namespace',
+      name: 'functions',
+      description: 'Existing functions.',
+      tools: [
+        { type: 'function', name: 'exec', parameters: { type: 'object' } },
+        { type: 'custom', name: 'shell', description: 'Run shell.' },
+      ],
+    });
+    expect((second.input as Array<Record<string, unknown>>).slice(0, 2)).toEqual(input.slice(0, 2));
+  });
+
+  test('does not duplicate an existing Responses Lite prefix', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    await callCodexResponses({
+      upstreamId,
+      account: activeAccount,
+      model: responsesLiteModel,
+      body: {
+        input: [
+          { type: 'additional_tools', role: 'developer', tools: [], id: 'at_existing' },
+          { type: 'message', role: 'developer', content: 'already projected', id: 'msg_existing' },
+          { type: 'message', role: 'user', content: 'hello' },
+        ],
+        stream: true,
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
+      headers: new Headers({ 'session-id': 'lite-thread' }),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    });
+
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input.filter(item => item.type === 'additional_tools')).toHaveLength(1);
+    expect(input[0]?.id).toBe('at_existing');
   });
 
   test('builds Codex responses headers and metadata from a clean set', async () => {
@@ -1041,6 +1144,34 @@ describe('callCodexResponsesCompact', () => {
 
     expect(result.result.object).toBe('response.compaction');
     expect(result.result.output[0]).toMatchObject({ id: 'cmp_x', type: 'compaction', encrypted_content: 'FULL_BLOB' });
+  });
+
+  test('uses the Responses Lite transport contract for compaction', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    await callCodexResponsesCompact({
+      upstreamId,
+      account: activeAccount,
+      model: responsesLiteModel,
+      body: {
+        input: [{ type: 'message', role: 'user', content: 'hello' }],
+        instructions: 'Base instructions.',
+      },
+      headers: new Headers({ 'session-id': 'lite-thread' }),
+      effects: makeEffects(),
+      call: noopUpstreamCallOptions(),
+    });
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    const body = await readJsonRequest(init) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(headers.get('x-openai-internal-codex-responses-lite')).toBe('true');
+    expect(body).not.toHaveProperty('instructions');
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(body.reasoning).toEqual({ context: 'all_turns' });
+    expect(input[0]).toMatchObject({ type: 'additional_tools', role: 'developer', tools: [] });
+    expect(input[1]).toMatchObject({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Base instructions.' }] });
   });
 
   test('2xx persists quota snapshot via opts.call.waitUntil', async () => {

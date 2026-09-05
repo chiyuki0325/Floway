@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { CODEX_CLI_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT } from '../src/constants.ts';
-import { codexImageProviderModel, codexPlanSupportsImages, codexRawToProviderModel, fetchCodexCatalog } from '../src/models.ts';
+import { codexImageProviderModel, codexModelUsesResponsesLite, codexPlanSupportsImages, codexRawToProviderModel, fetchCodexCatalog } from '../src/models.ts';
 import { priceRequest } from '@floway-dev/protocols/common';
 import { directFetcher, type FlagId } from '@floway-dev/provider';
 
@@ -11,6 +11,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('fetchCodexCatalog', () => {
   test('calls /codex/models with auth + identity headers, returns parsed catalog from {models: [...]}', async () => {
+    expect(CODEX_CLI_VERSION).toBe('0.153.4');
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
       models: [
         { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', context_window: 272000, max_context_window: 1000000 },
@@ -72,6 +73,7 @@ describe('fetchCodexCatalog', () => {
           { effort: 'high', description: 'Thorough' },
         ],
         default_reasoning_level: 'medium',
+        use_responses_lite: true,
       }],
     }));
     const catalog = await fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher });
@@ -83,6 +85,7 @@ describe('fetchCodexCatalog', () => {
       input_modalities: ['text', 'image'],
       reasoning_efforts: ['low', 'medium', 'high'],
       default_reasoning_effort: 'medium',
+      use_responses_lite: true,
     });
   });
 
@@ -109,6 +112,13 @@ describe('fetchCodexCatalog', () => {
       models: [{ slug: 'gpt-x', display_name: 'GPT-X', context_window: 1, supported_reasoning_levels: [{ description: 'no effort field' }] }],
     }));
     await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/reasoning level entry malformed/);
+  });
+
+  test('throws on malformed use_responses_lite', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
+      models: [{ slug: 'gpt-x', display_name: 'GPT-X', context_window: 1, use_responses_lite: 'true' }],
+    }));
+    await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/use_responses_lite malformed/);
   });
 });
 
@@ -174,6 +184,21 @@ describe('codexRawToProviderModel', () => {
     const flags: ReadonlySet<FlagId> = new Set(['responses-web-search-shim']);
     const m = codexRawToProviderModel({ id: 'gpt-5.4', display_name: 'GPT-5.4', context_window: 272000 }, flags);
     expect(m.enabledFlags).toBe(flags);
+  });
+
+  test('retains Responses Lite as provider-private invocation data', () => {
+    const lite = codexRawToProviderModel({
+      id: 'gpt-lite',
+      display_name: 'GPT Lite',
+      context_window: 272000,
+      use_responses_lite: true,
+    }, noFlags);
+    const regular = codexRawToProviderModel({ id: 'gpt-regular', display_name: 'GPT Regular', context_window: 272000 }, noFlags);
+
+    expect(lite.providerData).toEqual({ useResponsesLite: true });
+    expect(codexModelUsesResponsesLite(lite)).toBe(true);
+    expect(regular.providerData).toBeUndefined();
+    expect(codexModelUsesResponsesLite(regular)).toBe(false);
   });
 
   test('populates chat when raw advertises both modalities and reasoning', () => {
