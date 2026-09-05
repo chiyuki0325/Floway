@@ -125,7 +125,8 @@ const prepareCodexCall = async (opts: CodexBackendCallBase): Promise<{ ok: true;
   }
 
   try {
-    const entry = await ensureCodexAccessToken(opts.upstreamId, opts.account.chatgptAccountId, refresh => mintAccessToken(opts, refresh));
+    const entry = await ensureCodexAccessToken(opts.upstreamId, opts.account.chatgptAccountId, (refreshToken, previousAccessToken) =>
+      mintAccessToken(opts, refreshToken, previousAccessToken));
     return { ok: true, accessToken: entry };
   } catch (err) {
     if (err instanceof CodexOAuthSessionTerminatedError) {
@@ -136,8 +137,11 @@ const prepareCodexCall = async (opts: CodexBackendCallBase): Promise<{ ok: true;
   }
 };
 
-const mintAccessToken = (opts: CodexBackendCallBase, refreshToken: string) =>
-  mintCodexAccessToken(refreshToken, opts.call.fetcher, opts.effects.persistRefreshTokenRotation);
+const mintAccessToken = (
+  opts: CodexBackendCallBase,
+  refreshToken: string,
+  previousAccessToken: CodexAccessTokenEntry | null,
+) => mintCodexAccessToken(refreshToken, previousAccessToken, opts.call.fetcher, opts.effects.persistRefreshTokenRotation);
 
 interface CodexRequestIdentity {
   installationId: string;
@@ -602,8 +606,8 @@ const refreshAccessTokenForRetry = async (
     const effective = await ensureCodexAccessToken(
       opts.upstreamId,
       opts.account.chatgptAccountId,
-      async refreshToken => {
-        const minted = await mintAccessToken(opts, refreshToken);
+      async (refreshToken, previousAccessToken) => {
+        const minted = await mintAccessToken(opts, refreshToken, previousAccessToken ?? failedEntry);
         return mergeRetryPlan(minted, fallbackPlan ?? accessTokenPlan(failedEntry) ?? undefined);
       },
       true,

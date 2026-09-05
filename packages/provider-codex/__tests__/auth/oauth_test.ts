@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { buildCodexAuthorizeUrl, CodexOAuthSessionTerminatedError, exchangeCodexAuthorizationCode, refreshCodexAccessToken } from '../../src/auth/oauth.ts';
+import { CODEX_ORIGINATOR, CODEX_USER_AGENT } from '../../src/constants.ts';
 import { directFetcher } from '@floway-dev/provider';
 
 const okResponse = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -17,17 +18,18 @@ test('buildCodexAuthorizeUrl preserves the Codex CLI query surface and order', (
 describe('exchangeCodexAuthorizationCode', () => {
   test('POSTs form data and returns parsed tokens', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse({
-      access_token: 'at', refresh_token: 'rt', id_token: 'it', expires_in: 600,
+      access_token: 'at', refresh_token: 'rt', id_token: 'it',
     }));
     const result = await exchangeCodexAuthorizationCode({ code: 'CODE', codeVerifier: 'VER', fetcher: directFetcher });
-    expect(result).toEqual({ access_token: 'at', refresh_token: 'rt', id_token: 'it', expires_in: 600 });
+    expect(result).toEqual({ access_token: 'at', refresh_token: 'rt', id_token: 'it' });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe('https://auth.openai.com/oauth/token');
     expect((init as RequestInit).method).toBe('POST');
     const headers = new Headers((init as RequestInit).headers);
     expect(headers.get('content-type')).toMatch(/application\/x-www-form-urlencoded/);
-    expect(headers.get('user-agent')).toBe('codex-cli/0.91.0');
+    expect(headers.get('user-agent')).toBeNull();
+    expect(headers.get('originator')).toBeNull();
     const body = (init as RequestInit).body as string;
     const params = new URLSearchParams(body);
     expect(params.get('grant_type')).toBe('authorization_code');
@@ -49,16 +51,37 @@ describe('exchangeCodexAuthorizationCode', () => {
 });
 
 describe('refreshCodexAccessToken', () => {
-  test('POSTs grant_type=refresh_token + scope', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse({ access_token: 'at2', refresh_token: 'rt2', id_token: 'it2', expires_in: 600 }));
+  test('POSTs the current Codex JSON refresh contract', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse({ access_token: 'at2', refresh_token: 'rt2', id_token: 'it2' }));
     const result = await refreshCodexAccessToken('rt_old', directFetcher);
-    expect(result.access_token).toBe('at2');
-    expect(result.refresh_token).toBe('rt2');
-    const params = new URLSearchParams((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
-    expect(params.get('grant_type')).toBe('refresh_token');
-    expect(params.get('refresh_token')).toBe('rt_old');
-    expect(params.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
-    expect(params.get('scope')).toBe('openid profile email offline_access');
+    expect(result).toEqual({ access_token: 'at2', refresh_token: 'rt2', id_token: 'it2' });
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(headers.get('user-agent')).toBe(CODEX_USER_AGENT);
+    expect(headers.get('originator')).toBe(CODEX_ORIGINATOR);
+    expect(JSON.parse(init.body as string)).toEqual({
+      client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+      grant_type: 'refresh_token',
+      refresh_token: 'rt_old',
+    });
+  });
+
+  test('accepts omitted and null token fields without inventing replacements', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(okResponse({ access_token: 'at2', refresh_token: null }))
+      .mockResolvedValueOnce(okResponse({}));
+    await expect(refreshCodexAccessToken('rt_old', directFetcher)).resolves.toEqual({ access_token: 'at2' });
+    await expect(refreshCodexAccessToken('rt_old', directFetcher)).resolves.toEqual({});
+  });
+
+  test.each([
+    ['access_token', 42],
+    ['refresh_token', ''],
+    ['id_token', false],
+  ])('rejects malformed %s', async (key, value) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse({ [key]: value }));
+    await expect(refreshCodexAccessToken('rt_old', directFetcher)).rejects.toThrow(new RegExp(`malformed ${key}`));
   });
 
   test('session-terminated → CodexOAuthSessionTerminatedError', async () => {

@@ -12,7 +12,7 @@ export interface CodexIdTokenIdentity {
 }
 
 export const parseCodexIdTokenClaims = (idToken: string): CodexIdTokenIdentity => {
-  const payload = parseCodexIdTokenPayload(idToken);
+  const payload = parseCodexJwtPayload(idToken, 'id_token');
 
   const auth = payload['https://api.openai.com/auth'];
   if (!isObject(auth)) throw new Error('id_token missing https://api.openai.com/auth claim');
@@ -39,7 +39,7 @@ export const parseCodexIdTokenClaims = (idToken: string): CodexIdTokenIdentity =
 // callers can preserve the latest observation or use the import-time identity;
 // malformed present claims still surface.
 export const parseCodexIdTokenPlanType = (idToken: string): string | undefined => {
-  const payload = parseCodexIdTokenPayload(idToken);
+  const payload = parseCodexJwtPayload(idToken, 'id_token');
   const auth = payload['https://api.openai.com/auth'];
   if (auth === undefined) return undefined;
   if (!isObject(auth)) throw new Error('id_token https://api.openai.com/auth claim is not an object');
@@ -49,18 +49,31 @@ export const parseCodexIdTokenPlanType = (idToken: string): string | undefined =
   return planType;
 };
 
-const parseCodexIdTokenPayload = (idToken: string): Record<string, unknown> => {
-  const segments = idToken.split('.');
-  if (segments.length !== 3) throw new Error(`id_token must have 3 segments, got ${segments.length}`);
+export const parseCodexAccessTokenExpiresAt = (accessToken: string): number | undefined => {
+  let payload: Record<string, unknown>;
+  try {
+    payload = parseCodexJwtPayload(accessToken, 'access_token');
+  } catch {
+    return undefined;
+  }
+  const exp = payload.exp;
+  if (typeof exp !== 'number' || !Number.isSafeInteger(exp)) return undefined;
+  const expiresAt = exp * 1000;
+  return Number.isSafeInteger(expiresAt) ? expiresAt : undefined;
+};
+
+const parseCodexJwtPayload = (jwt: string, tokenName: 'access_token' | 'id_token'): Record<string, unknown> => {
+  const segments = jwt.split('.');
+  if (segments.length !== 3) throw new Error(`${tokenName} must have 3 segments, got ${segments.length}`);
 
   let payload: unknown;
   try {
     payload = JSON.parse(decodeBase64UrlToUtf8(segments[1]));
   } catch (cause) {
-    throw new Error('id_token payload is not base64url-encoded JSON', { cause: cause as Error });
+    throw new Error(`${tokenName} payload is not base64url-encoded JSON`, { cause: cause as Error });
   }
 
-  if (!isObject(payload)) throw new Error('id_token payload is not an object');
+  if (!isObject(payload)) throw new Error(`${tokenName} payload is not an object`);
   return payload;
 };
 

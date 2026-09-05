@@ -1,7 +1,7 @@
 import type { CodexUpstreamConfig } from '../config.ts';
 import type { CodexUpstreamState } from '../state.ts';
 import type { CodexIdTokenIdentity } from './jwt.ts';
-import { parseCodexIdTokenClaims } from './jwt.ts';
+import { parseCodexAccessTokenExpiresAt, parseCodexIdTokenClaims } from './jwt.ts';
 import { exchangeCodexAuthorizationCode } from './oauth.ts';
 import type { Fetcher } from '@floway-dev/provider';
 
@@ -106,7 +106,7 @@ export const importCodexFromCallback = async (opts: { code: string; codeVerifier
     identity,
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
-    expiresAt: Date.now() + tokens.expires_in * 1000,
+    expiresAt: parseCodexAccessTokenExpiresAt(tokens.access_token) ?? Date.now(),
     now: new Date().toISOString(),
   });
 };

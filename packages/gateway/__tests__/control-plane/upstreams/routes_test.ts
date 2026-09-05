@@ -889,7 +889,7 @@ test('POST /api/upstreams/codex/oauth/exchange in create state (callback) return
   const { adminSession } = await setupAppTest();
 
   await withMockedFetch(
-    () => jsonResponse({ access_token: 'at_cb', refresh_token: 'rt_cb', id_token: fakeIdToken({}), expires_in: 600 }),
+    () => jsonResponse({ access_token: 'at_cb', refresh_token: 'rt_cb', id_token: fakeIdToken({}) }),
     async () => {
       const resp = await requestApp(
         '/api/upstreams/codex/oauth/exchange',
@@ -997,7 +997,6 @@ test('POST /api/upstreams/codex/oauth/refresh rotates the refresh token and pers
       access_token: 'at_rotated',
       refresh_token: 'rt_rotated',
       id_token: fakeIdToken({}),
-      expires_in: 3600,
     }),
     async () => {
       const resp = await requestApp('/api/upstreams/codex/oauth/refresh', authed(adminSession, {

@@ -44,6 +44,11 @@ const baseAccount = {
 };
 
 const farFutureMs = Date.now() + 24 * 60 * 60 * 1000;
+const makeJwt = (payload: unknown): string => [
+  Buffer.from('{}').toString('base64url'),
+  Buffer.from(JSON.stringify(payload)).toString('base64url'),
+  Buffer.from('signature').toString('base64url'),
+].join('.');
 
 let current: UpstreamRecord | null;
 let repo: UpstreamStateRepoStub;
@@ -57,7 +62,10 @@ beforeEach(() => {
   initProviderRepo(() => ({ upstreams: repo }));
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 const storedState = (): CodexUpstreamState => current!.state as CodexUpstreamState;
 
@@ -251,7 +259,7 @@ describe('ensureCodexAccessToken', () => {
     const mint = vi.fn().mockResolvedValue(minted);
     const out = await ensureCodexAccessToken(upstreamId, accountId, mint);
     expect(out).toEqual(minted);
-    expect(mint).toHaveBeenCalledWith('rt_v1');
+    expect(mint).toHaveBeenCalledWith('rt_v1', null);
     expect(storedState().accounts[0].accessToken).toEqual(minted);
   });
 
@@ -262,7 +270,7 @@ describe('ensureCodexAccessToken', () => {
     const mint = vi.fn().mockResolvedValue(minted);
     const out = await ensureCodexAccessToken(upstreamId, accountId, mint);
     expect(out).toEqual(minted);
-    expect(mint).toHaveBeenCalledWith('rt_v1');
+    expect(mint).toHaveBeenCalledWith('rt_v1', expect.objectContaining({ token: 'at_old' }));
   });
 
   test('preserves the latest known plan when a refreshed token omits it', async () => {
@@ -340,53 +348,86 @@ describe('ensureCodexAccessToken', () => {
 });
 
 describe('mintCodexAccessToken', () => {
-  test('stores the current plan from the refreshed id_token', async () => {
-    const idToken = [
-      Buffer.from('{}').toString('base64url'),
-      Buffer.from(JSON.stringify({
-        email: 'a@b.com',
-        'https://api.openai.com/auth': {
-          chatgpt_account_id: accountId,
-          chatgpt_user_id: 'usr',
-          chatgpt_plan_type: 'team',
-        },
-      })).toString('base64url'),
-      Buffer.from('signature').toString('base64url'),
-    ].join('.');
+  test('uses access JWT expiration and stores the current plan', async () => {
+    const accessToken = makeJwt({ exp: 1_800_000_000 });
+    const idToken = makeJwt({
+      email: 'a@b.com',
+      'https://api.openai.com/auth': {
+        chatgpt_account_id: accountId,
+        chatgpt_user_id: 'usr',
+        chatgpt_plan_type: 'team',
+      },
+    });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      access_token: 'at', refresh_token: 'rt_v2', id_token: idToken, expires_in: 600,
+      access_token: accessToken, refresh_token: 'rt_v2', id_token: idToken,
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const persistRotation = vi.fn(async () => {});
-    const entry = await mintCodexAccessToken('rt_v1', directFetcher, persistRotation);
+    const entry = await mintCodexAccessToken('rt_v1', null, directFetcher, persistRotation);
+    expect(entry.token).toBe(accessToken);
+    expect(entry.expiresAt).toBe(1_800_000_000_000);
     expect(entry.planType).toBe('team');
     expect(entry.planObservedAt).toBe(entry.refreshedAt);
     expect(persistRotation).toHaveBeenCalledWith('rt_v2');
   });
 
   test('accepts refreshed id_tokens without import-only identity or plan claims', async () => {
-    const idToken = [
-      Buffer.from('{}').toString('base64url'),
-      Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': {} })).toString('base64url'),
-      Buffer.from('signature').toString('base64url'),
-    ].join('.');
+    const idToken = makeJwt({ 'https://api.openai.com/auth': {} });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      access_token: 'at', refresh_token: 'rt_v2', id_token: idToken, expires_in: 600,
+      access_token: makeJwt({ exp: 1_800_000_000 }), refresh_token: 'rt_v2', id_token: idToken,
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    const entry = await mintCodexAccessToken('rt_v1', directFetcher, async () => {});
+    const entry = await mintCodexAccessToken('rt_v1', null, directFetcher, async () => {});
     expect(entry.planType).toBeUndefined();
   });
 
+  test('preserves the previous access token when refresh omits it', async () => {
+    const previous: CodexAccessTokenEntry = {
+      token: 'at_old',
+      expiresAt: 1234,
+      refreshedAt: '2026-09-01T00:00:00.000Z',
+      planType: 'plus',
+      planObservedAt: '2026-09-01T00:00:00.000Z',
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const persistRotation = vi.fn(async () => {});
+    await expect(mintCodexAccessToken('rt_v1', previous, directFetcher, persistRotation)).resolves.toEqual(previous);
+    expect(persistRotation).not.toHaveBeenCalled();
+  });
+
+  test('updates plan metadata while preserving an omitted access token', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+    const previous: CodexAccessTokenEntry = { token: 'at_old', expiresAt: 1234, refreshedAt: 'old', planType: 'plus' };
+    const idToken = makeJwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'team' } });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id_token: idToken }), { status: 200 }));
+    await expect(mintCodexAccessToken('rt_v1', previous, directFetcher, async () => {})).resolves.toEqual({
+      ...previous,
+      planType: 'team',
+      planObservedAt: '2026-09-05T12:00:00.000Z',
+    });
+  });
+
+  test('rejects an omitted access token when no previous token exists', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ refresh_token: 'rt_v2' }), { status: 200 }));
+    const persistRotation = vi.fn(async () => {});
+    await expect(mintCodexAccessToken('rt_v1', null, directFetcher, persistRotation)).rejects.toThrow(/no previous access token/);
+    expect(persistRotation).toHaveBeenCalledWith('rt_v2');
+  });
+
+  test('marks a new access token without a valid exp immediately stale', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ access_token: 'not-a-jwt' }), { status: 200 }));
+    const entry = await mintCodexAccessToken('rt_v1', null, directFetcher, async () => {});
+    expect(entry.expiresAt).toBe(Date.now());
+  });
+
   test('persists a rotated refresh token before surfacing malformed plan metadata', async () => {
-    const idToken = [
-      Buffer.from('{}').toString('base64url'),
-      Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: 42 } })).toString('base64url'),
-      Buffer.from('signature').toString('base64url'),
-    ].join('.');
+    const idToken = makeJwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 42 } });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      access_token: 'at', refresh_token: 'rt_v2', id_token: idToken, expires_in: 600,
+      access_token: makeJwt({ exp: 1_800_000_000 }), refresh_token: 'rt_v2', id_token: idToken,
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const persistRotation = vi.fn(async () => {});
-    await expect(mintCodexAccessToken('rt_v1', directFetcher, persistRotation)).rejects.toThrow(/chatgpt_plan_type/);
+    await expect(mintCodexAccessToken('rt_v1', null, directFetcher, persistRotation)).rejects.toThrow(/chatgpt_plan_type/);
     expect(persistRotation).toHaveBeenCalledWith('rt_v2');
   });
 });

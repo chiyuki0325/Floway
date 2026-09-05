@@ -77,11 +77,10 @@ const idToken = (planType = 'plus'): string => [
   Buffer.from('signature').toString('base64url'),
 ].join('.');
 
-const oauthTokenResponse = (overrides: Partial<{ access_token: string; refresh_token: string; expires_in: number }> = {}): Response => new Response(JSON.stringify({
+const oauthTokenResponse = (overrides: Partial<{ access_token: string; refresh_token: string }> = {}): Response => new Response(JSON.stringify({
   access_token: overrides.access_token ?? 'at_minted',
   refresh_token: overrides.refresh_token ?? 'rt_v2',
   id_token: idToken(),
-  expires_in: overrides.expires_in ?? 3600,
 }), { status: 200, headers: new Headers({ 'content-type': 'application/json' }) });
 
 describe('createCodexProvider', () => {
@@ -141,6 +140,22 @@ describe('createCodexProvider', () => {
     // first proves.
     const account = (current!.state as CodexUpstreamState).accounts[0];
     expect(account.refresh_token).toBe('rt_v2');
+    expect(account.accessToken?.token).toBe('at_minted');
+  });
+
+  test('getProvidedModels preserves the stored refresh token when OAuth omits a rotation', async () => {
+    current = baseRecord;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+      if (url.includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'at_minted', id_token: idToken() }), { status: 200 });
+      }
+      if (url.includes('/codex/models')) return modelsResponse();
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    await createCodexProvider(baseRecord).instance.getProvidedModels(directFetcher);
+    const account = (current!.state as CodexUpstreamState).accounts[0];
+    expect(account.refresh_token).toBe('rt_v1');
     expect(account.accessToken?.token).toBe('at_minted');
   });
 

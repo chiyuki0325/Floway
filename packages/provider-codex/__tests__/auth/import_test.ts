@@ -18,7 +18,10 @@ const identityPayload = {
   'https://api.openai.com/profile': { email: 'a@b.com' },
 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('importCodexFromAuthJson', () => {
   test('happy path returns identity + tokens', async () => {
@@ -58,21 +61,33 @@ describe('importCodexFromAuthJson', () => {
 
 describe('importCodexFromCallback', () => {
   test('exchanges code → tokens, parses identity, returns config+state', async () => {
+    const accessToken = makeJwt({ exp: 1_800_000_000 });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      access_token: 'at', refresh_token: 'rt', id_token: makeJwt(identityPayload), expires_in: 600,
+      access_token: accessToken, refresh_token: 'rt', id_token: makeJwt(identityPayload),
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const result = await importCodexFromCallback({ code: 'CODE', codeVerifier: 'VER', fetcher: directFetcher });
     expect(result.config.accounts[0].email).toBe('a@b.com');
     expect(result.state.accounts[0].refresh_token).toBe('rt');
-    expect(result.state.accounts[0].accessToken?.token).toBe('at');
+    expect(result.state.accounts[0].accessToken?.token).toBe(accessToken);
+    expect(result.state.accounts[0].accessToken?.expiresAt).toBe(1_800_000_000_000);
     expect(result.state.accounts[0].accessToken?.planType).toBe('plus');
     expect(result.state.accounts[0].accessToken?.planObservedAt).toBe(result.state.accounts[0].accessToken?.refreshedAt);
     expect(result.state.accounts[0].openaiDeviceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
+  test('uses an immediately stale expiry when the access token has no valid exp', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'not-a-jwt', refresh_token: 'rt', id_token: makeJwt(identityPayload),
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const result = await importCodexFromCallback({ code: 'CODE', codeVerifier: 'VER', fetcher: directFetcher });
+    expect(result.state.accounts[0].accessToken?.expiresAt).toBe(Date.now());
+  });
+
   test('routes the token exchange through the supplied fetcher', async () => {
     const fetcher = vi.fn<Fetcher>(async () => new Response(JSON.stringify({
-      access_token: 'at', refresh_token: 'rt', id_token: makeJwt(identityPayload), expires_in: 600,
+      access_token: 'at', refresh_token: 'rt', id_token: makeJwt(identityPayload),
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     await importCodexFromCallback({ code: 'CODE', codeVerifier: 'VER', fetcher });
     expect(fetcher).toHaveBeenCalledTimes(1);
