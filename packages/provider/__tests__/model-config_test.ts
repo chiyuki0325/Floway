@@ -47,11 +47,11 @@ describe('chatField', () => {
 
   test('parses a full chat block with effort sub-block', () => {
     const chat = chatField({
-      modalities: { input: ['text', 'image'], output: ['text'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
       reasoning: { effort: { supported: ['low', 'medium', 'high'], default: 'medium' } },
     }, 'm.chat');
     expect(chat).toEqual({
-      modalities: { input: ['text', 'image'], output: ['text'] },
+      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
       reasoning: { effort: { supported: ['low', 'medium', 'high'], default: 'medium' } },
     });
   });
