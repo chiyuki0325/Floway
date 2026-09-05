@@ -18,15 +18,9 @@ const invocation = (payload: CanonicalResponsesPayload): ResponsesBoundaryCtx =>
   action: 'generate',
 });
 
-test('drops every field Codex rejects with Unsupported parameter', async () => {
-  // The fields enumerated below are the full set Codex's ChatGPT-subscription
-  // path rejects; keeping the assertion exhaustive guards against silent
-  // drift if the constant inside the interceptor is edited without updating
-  // its rationale. Several entries (frequency_penalty, presence_penalty,
-  // user, stream_options) are not on the canonical payload and reach Codex only
-  // through a permissive caller. `prompt_cache_retention` is modeled but
-  // explicitly rejected by this provider. Widen through `unknown` so the test
-  // covers the complete strip set.
+test('drops unverified fields while projecting supported Codex stream options', async () => {
+  // Several fields reach Codex only through permissive callers. Widen through
+  // unknown so the test covers the complete compatibility filter.
   const ctx = invocation({
     model: 'gpt-test',
     input: [{ type: 'message', role: 'user', content: 'hello' }],
@@ -39,7 +33,7 @@ test('drops every field Codex rejects with Unsupported parameter', async () => {
     metadata: { trace_id: 'abc' },
     prompt_cache_retention: '24h',
     safety_identifier: 'caller-supplied',
-    stream_options: { include_usage: true },
+    stream_options: { reasoning_summary_delivery: 'sequential_cutoff', include_usage: true },
   } as unknown as CanonicalResponsesPayload);
 
   await stripUnsupportedFields(ctx, stubRequest, okEvents);
@@ -53,6 +47,18 @@ test('drops every field Codex rejects with Unsupported parameter', async () => {
   assertFalse('metadata' in ctx.payload);
   assertFalse('prompt_cache_retention' in ctx.payload);
   assertFalse('safety_identifier' in ctx.payload);
+  assertEquals(ctx.payload.stream_options, { reasoning_summary_delivery: 'sequential_cutoff' });
+});
+
+test('drops generic stream options without the Codex-supported field', async () => {
+  const ctx = invocation({
+    model: 'gpt-test',
+    input: [],
+    stream_options: { include_usage: true },
+  } as unknown as CanonicalResponsesPayload);
+
+  await stripUnsupportedFields(ctx, stubRequest, okEvents);
+
   assertFalse('stream_options' in ctx.payload);
 });
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createUpstreamStateRepoStub, type UpstreamStateRepoStub } from './upstream-state-repo.ts';
 import { createCodexProvider } from '../src/provider.ts';
 import type { CodexAccessTokenEntry, CodexUpstreamState } from '../src/state.ts';
+import type { CanonicalResponsesPayload } from '@floway-dev/protocols/responses';
 import { directFetcher, initProviderRepo, type UpstreamRecord } from '@floway-dev/provider';
 import { noopUpstreamCallOptions, readJsonRequest, stubProviderModel } from '@floway-dev/test-utils';
 
@@ -267,7 +268,8 @@ describe('createCodexProvider', () => {
           { type: 'message', role: 'developer', content: 'inline instructions' },
         ],
         stream: true,
-      },
+        stream_options: { reasoning_summary_delivery: 'sequential_cutoff' },
+      } as unknown as CanonicalResponsesPayload,
       'generate',
       undefined,
       noopUpstreamCallOptions(),
@@ -283,6 +285,7 @@ describe('createCodexProvider', () => {
       { type: 'message', role: 'user', content: 'hi' },
       { type: 'message', role: 'developer', content: 'inline instructions' },
     ]);
+    expect(body.stream_options).toEqual({ reasoning_summary_delivery: 'sequential_cutoff' });
   });
 
   test('callResponses keeps Codex-supported fields when dispatching unary compact', async () => {
