@@ -471,14 +471,14 @@ describe('callCodexResponses — upstream classification', () => {
     expect(secondMetadata.request_kind).toBe('turn');
   });
 
-  test('injects prompt_cache_key only when caller leaves it absent', async () => {
+  test('defaults prompt_cache_key to the root session and preserves explicit values', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => sseResponse());
 
     await callCodexResponses({
       upstreamId, account: activeAccount, model,
       body: { input: [], stream: true },
-      headers: new Headers({ 'session-id': 'cache-session' }),
+      headers: new Headers({ 'session-id': 'cache-session', 'thread-id': 'child-thread' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
     });
