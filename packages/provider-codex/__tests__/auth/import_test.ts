@@ -25,9 +25,10 @@ afterEach(() => {
 
 describe('importCodexFromAuthJson', () => {
   test('happy path returns identity + tokens', async () => {
+    const accessToken = makeJwt({ exp: 1_800_000_000 });
     const authJson = JSON.stringify({
       tokens: {
-        access_token: 'at1',
+        access_token: accessToken,
         refresh_token: 'rt1',
         id_token: makeJwt(identityPayload),
         account_id: 'acc',
@@ -38,11 +39,24 @@ describe('importCodexFromAuthJson', () => {
     expect(result.state.accounts[0].chatgptAccountId).toBe('acc');
     expect(result.state.accounts[0].refresh_token).toBe('rt1');
     expect(result.state.accounts[0].state).toBe('active');
-    expect(result.state.accounts[0].accessToken?.token).toBe('at1');
+    expect(result.state.accounts[0].accessToken?.token).toBe(accessToken);
     expect(result.state.accounts[0].accessToken?.planType).toBe('plus');
     expect(result.state.accounts[0].accessToken?.planObservedAt).toBe(result.state.accounts[0].accessToken?.refreshedAt);
-    expect(result.state.accounts[0].accessToken?.expiresAt).toBeGreaterThan(Date.now());
+    expect(result.state.accounts[0].accessToken?.expiresAt).toBe(1_800_000_000_000);
     expect(result.state.accounts[0].openaiDeviceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  test('marks an imported access token without a valid exp immediately stale', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+    const result = await importCodexFromAuthJson(JSON.stringify({
+      tokens: {
+        access_token: 'not-a-jwt',
+        refresh_token: 'rt1',
+        id_token: makeJwt(identityPayload),
+      },
+    }));
+    expect(result.state.accounts[0].accessToken?.expiresAt).toBe(Date.now());
   });
 
   test('rejects malformed payload', async () => {
