@@ -829,6 +829,73 @@ describe('callCodexResponses — upstream classification', () => {
     expect(bodyMetadata.thread_source).toBe('user');
   });
 
+  test('filters legacy and oversized metadata while bounding string extras', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    const extras = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`extra_${index}`, `value-${index}`]));
+    await callCodexResponses({
+      upstreamId, account: activeAccount, model,
+      body: {
+        input: [], stream: true,
+        client_metadata: {
+          'x-codex-turn-metadata': JSON.stringify({
+            request_kind: 'prewarm',
+            agent_name: 'worker',
+            tool_namespaces_info: { shell: { name: 'shell' } },
+            code_mode_tool_names: ['legacy'],
+            object_extra: { nested: true },
+            'invalid key': 'value',
+            oversized_extra: 'x'.repeat(129),
+            ...extras,
+          }),
+        },
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
+      headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
+    });
+
+    const headers = new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers);
+    const headerMetadata = JSON.parse(headers.get('x-codex-turn-metadata') ?? 'null') as Record<string, unknown>;
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    const bodyMetadata = JSON.parse((body.client_metadata as Record<string, string>)['x-codex-turn-metadata']) as Record<string, unknown>;
+    expect(bodyMetadata.request_kind).toBe('prewarm');
+    expect(bodyMetadata.agent_name).toBe('worker');
+    expect(bodyMetadata.tool_namespaces_info).toEqual({ shell: { name: 'shell' } });
+    expect(headerMetadata.tool_namespaces_info).toBeUndefined();
+    expect(bodyMetadata.code_mode_tool_names).toBeUndefined();
+    expect(bodyMetadata.object_extra).toBeUndefined();
+    expect(bodyMetadata['invalid key']).toBeUndefined();
+    expect(bodyMetadata.oversized_extra).toBeUndefined();
+    expect(bodyMetadata.extra_15).toBe('value-15');
+    expect(bodyMetadata.extra_16).toBeUndefined();
+  });
+
+  test('omits turn and request identity from memory metadata', async () => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    await callCodexResponses({
+      upstreamId, account: activeAccount, model,
+      body: {
+        input: [], stream: true,
+        client_metadata: {
+          'x-codex-turn-metadata': JSON.stringify({
+            request_kind: 'memory',
+            agent_name: 'memory-agent',
+            session_id: 'memory-session',
+            thread_id: 'memory-thread',
+            turn_id: 'memory-turn',
+            window_id: 'memory-thread:0',
+            custom_label: 'memory',
+          }),
+        },
+      } as unknown as Parameters<typeof callCodexResponses>[0]['body'],
+      headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
+    });
+
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    const metadata = JSON.parse((body.client_metadata as Record<string, string>)['x-codex-turn-metadata']) as Record<string, unknown>;
+    expect(metadata).toEqual({ request_kind: 'memory', custom_label: 'memory' });
+  });
+
   test('keeps only current flat client_metadata projections', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
