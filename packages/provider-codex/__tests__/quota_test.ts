@@ -315,6 +315,18 @@ describe('putCodexQuota', () => {
     expect(written?.codex_bengalfox.data).toEqual(bengalfox);
   });
 
+  test('does not let an older background write replace a newer family snapshot', async () => {
+    const newer: CodexQuotaSnapshot = { observed_at: '2026-06-05T02:00:00.000Z', active_limit: 'premium', primary_used_percent: 20 };
+    current = makeRecord({ accounts: [{ ...baseAccount, quotaSnapshot: { premium: { fetchedAt: 200, data: newer } } }] });
+    vi.spyOn(Date, 'now').mockReturnValue(100);
+
+    const older: CodexQuotaSnapshot = { observed_at: '2026-06-05T01:00:00.000Z', active_limit: 'premium', primary_used_percent: 10 };
+    await putSnapshot(accountId, older);
+
+    expect((current.state as CodexUpstreamState).accounts[0].quotaSnapshot?.premium).toEqual({ fetchedAt: 200, data: newer });
+    expect(repo.writes).toEqual([]);
+  });
+
   test('uses the unknown key when active_limit is absent', async () => {
     const snap: CodexQuotaSnapshot = { observed_at: '2026-06-05T00:00:00.000Z', primary_used_percent: 42 };
     await putSnapshot(accountId, snap);

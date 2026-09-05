@@ -168,7 +168,7 @@ describe('callCodexResponses — token freshness', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     const responsesInit = fetchSpy.mock.calls[1][1] as RequestInit;
     expect(new Headers(responsesInit.headers).get('authorization')).toBe('Bearer at_new');
-    expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2');
+    expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
     expect((currentRecord.state as CodexUpstreamState).accounts[0].accessToken?.token).toBe('at_new');
   });
 
@@ -183,15 +183,15 @@ describe('callCodexResponses — token freshness', () => {
     expect(new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers).get('authorization')).toBe('Bearer at_kv');
   });
 
-  test('persistTerminalState refresh_failed when /oauth/token returns app_session_terminated', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(errorJson(400, { error: { code: 'app_session_terminated', message: 'gone' } }));
+  test('persists refresh_failed for the refresh generation rejected by OAuth', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(errorJson(400, { error: { code: 'refresh_token_invalidated', message: 'gone' } }));
     const effects = makeEffects();
     const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
     expect(result.ok).toBe(false);
-    expect(effects.persistTerminalState).toHaveBeenCalledWith('refresh_failed', expect.stringMatching(/gone/));
+    expect(effects.persistTerminalState).toHaveBeenCalledWith('refresh_failed', expect.stringMatching(/gone/), 'rt_v1');
   });
 });
 
@@ -923,25 +923,30 @@ describe('callCodexResponses — upstream classification', () => {
     expect(headers.get('session-id')).toBe('header-session');
   });
 
-  test('401 token_invalidated → persistTerminalState session_terminated, return 503', async () => {
+  test('401 token_invalidated follows reload then refresh recovery', async () => {
     seedFreshAccessToken();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(401, { error: { code: 'token_invalidated', message: 'session ended' } }));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'token_invalidated', message: 'session ended' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'token_invalidated', message: 'still ended' } }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }))
+      .mockResolvedValueOnce(sseResponse());
     const effects = makeEffects();
     const result = await callCodexResponses({
       upstreamId, account: activeAccount,
       model, body: { input: [], stream: true }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.response.status).toBe(503);
-    expect(effects.persistTerminalState).toHaveBeenCalledWith('session_terminated', expect.stringMatching(/session ended/));
+    expect(result.ok).toBe(true);
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/codex/responses'))).toHaveLength(3);
+    expect(effects.persistTerminalState).not.toHaveBeenCalled();
   });
 
-  test('401 other → refresh + retry once, then bubble persistent 401', async () => {
+  test('persistent 401 uses reload then refresh before bubbling the third API failure', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
-      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }));
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired after refresh' } }));
     const effects = makeEffects();
     const result = await callCodexResponses({
       upstreamId, account: activeAccount,
@@ -949,15 +954,15 @@ describe('callCodexResponses — upstream classification', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.response.status).toBe(401);
-    expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2');
+    expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
     const firstMetadata = JSON.parse(new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers).get('x-codex-turn-metadata') ?? 'null') as Record<string, unknown>;
-    const retryMetadata = JSON.parse(new Headers((fetchSpy.mock.calls[2][1] as RequestInit).headers).get('x-codex-turn-metadata') ?? 'null') as Record<string, unknown>;
+    const retryMetadata = JSON.parse(new Headers((fetchSpy.mock.calls[3][1] as RequestInit).headers).get('x-codex-turn-metadata') ?? 'null') as Record<string, unknown>;
     expect(firstMetadata.window_number).toBe(0);
     expect(retryMetadata.window_number).toBe(0);
     expect(firstMetadata.context_window_id).toMatch(UUID_V7_RE);
     expect(retryMetadata.context_window_id).toBe(firstMetadata.context_window_id);
     expect(retryMetadata.turn_id).toBe(firstMetadata.turn_id);
-    expect(await readJsonRequest(fetchSpy.mock.calls[2][1] as RequestInit)).toEqual(
+    expect(await readJsonRequest(fetchSpy.mock.calls[3][1] as RequestInit)).toEqual(
       await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit),
     );
   });
@@ -999,6 +1004,7 @@ describe('callCodexResponses — upstream classification', () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free') }))
       .mockResolvedValueOnce(sseResponse(401))
+      .mockResolvedValueOnce(sseResponse(401))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
       .mockResolvedValueOnce(sseResponse());
     const result = await callCodexResponses({
@@ -1031,6 +1037,7 @@ describe('callCodexResponses — background-write registration', () => {
     seedFreshAccessToken();
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(sseResponse());
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
@@ -1076,6 +1083,7 @@ describe('callCodexImagesGenerations', () => {
     seedFreshAccessToken({ ...farFutureAccessToken, planType: 'plus' });
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('plus') }))
       .mockResolvedValueOnce(errorJson(200, { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }));
     const result = await callCodexImagesGenerations({
@@ -1091,15 +1099,18 @@ describe('callCodexImagesGenerations', () => {
     });
     expect(result.response.status).toBe(200);
     const imageCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes('/images/generations'));
-    expect(imageCalls).toHaveLength(2);
+    expect(imageCalls).toHaveLength(3);
     const firstHeaders = new Headers((imageCalls[0][1] as RequestInit).headers);
     const secondHeaders = new Headers((imageCalls[1][1] as RequestInit).headers);
+    const thirdHeaders = new Headers((imageCalls[2][1] as RequestInit).headers);
     expect(firstHeaders.get('originator')).toBe('chatgpt_cca');
     expect(secondHeaders.get('originator')).toBe('chatgpt_cca');
     expect(firstHeaders.get('x-openai-fedramp')).toBe('true');
     expect(secondHeaders.get('x-openai-fedramp')).toBe('true');
+    expect(thirdHeaders.get('x-openai-fedramp')).toBe('true');
     expect(firstHeaders.get('x-codex-image-turn-id')).toMatch(UUID_V7_RE);
     expect(secondHeaders.get('x-codex-image-turn-id')).toBe(firstHeaders.get('x-codex-image-turn-id'));
+    expect(thirdHeaders.get('x-codex-image-turn-id')).toBe(firstHeaders.get('x-codex-image-turn-id'));
   });
 
   test('uses a refreshed Free plan before dispatching the image request', async () => {
@@ -1126,6 +1137,7 @@ describe('callCodexImagesGenerations', () => {
     seedFreshAccessToken({ ...farFutureAccessToken, planType: 'plus' });
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(errorJson(200, {
         access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken('free'),
       }));
@@ -1140,7 +1152,7 @@ describe('callCodexImagesGenerations', () => {
       call: noopUpstreamCallOptions(),
     });
     expect(result.response.status).toBe(403);
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/images/generations'))).toHaveLength(1);
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/images/generations'))).toHaveLength(2);
   });
 
   test('does not invalidate a sibling token that won before the 401 was handled', async () => {
@@ -1175,6 +1187,7 @@ describe('callCodexImagesGenerations', () => {
     seedFreshAccessToken({ ...farFutureAccessToken, planType: 'plus' });
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(errorJson(200, {
         access_token: 'at2', refresh_token: 'rt_v2', id_token: idTokenWithoutPlan(),
       }))
@@ -1190,7 +1203,7 @@ describe('callCodexImagesGenerations', () => {
       call: noopUpstreamCallOptions(),
     });
     expect(result.response.status).toBe(200);
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/images/generations'))).toHaveLength(2);
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/images/generations'))).toHaveLength(3);
     await flushMicrotasks();
     expect((currentRecord.state as CodexUpstreamState).accounts[0].accessToken?.planType).toBe('plus');
   });
@@ -1198,7 +1211,7 @@ describe('callCodexImagesGenerations', () => {
 
 // `callCodexResponsesCompact` shares OAuth + quota + 401-retry plumbing with
 // `callCodexResponses` (both go through `prepareCodexCall` →
-// `dispatchCodexHttpCall` → `refreshAccessTokenForRetry`). The streaming
+// `dispatchCodexHttpCall` → reload/refresh recovery). The streaming
 // suite above pins those shared paths; this block exercises only the
 // compact-specific wire contract — endpoint URL, `Accept: application/json`,
 // body shape (no `stream`, no `store`), unary JSON decoding — plus the 401
@@ -1339,10 +1352,11 @@ describe('callCodexResponsesCompact', () => {
     expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  test('401 other → refresh + retry once on the compact endpoint, succeed', async () => {
+  test('401 uses reload then refresh on the compact endpoint', async () => {
     seedFreshAccessToken();
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
       .mockResolvedValueOnce(compactJsonResponse());
     const effects = makeEffects();
@@ -1351,13 +1365,16 @@ describe('callCodexResponsesCompact', () => {
       body: { input: [] }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
     expect(result.ok).toBe(true);
-    expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2');
+    expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
     // Both compact requests hit the same URL; the bearer flipped from at_kv to at2.
     expect(fetchSpy.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
     const firstInit = fetchSpy.mock.calls[0][1] as RequestInit;
-    const retryInit = fetchSpy.mock.calls[2][1] as RequestInit;
+    const reloadInit = fetchSpy.mock.calls[1][1] as RequestInit;
+    const retryInit = fetchSpy.mock.calls[3][1] as RequestInit;
     const firstHeaders = new Headers(firstInit.headers);
+    const reloadHeaders = new Headers(reloadInit.headers);
     const retryHeaders = new Headers(retryInit.headers);
+    expect(reloadHeaders.get('authorization')).toBe('Bearer at_kv');
     expect(retryHeaders.get('authorization')).toBe('Bearer at2');
     expect(retryHeaders.get('x-codex-installation-id')).toBe(firstHeaders.get('x-codex-installation-id'));
     expect(retryHeaders.get('x-client-request-id')).toBeNull();
@@ -1370,6 +1387,7 @@ describe('callCodexResponsesCompact', () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free') }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
       .mockResolvedValueOnce(compactJsonResponse());
     const result = await callCodexResponsesCompact({
@@ -1385,17 +1403,24 @@ describe('callCodexResponsesCompact', () => {
     expect((currentRecord.state as CodexUpstreamState).accounts[0].accessToken?.planType).toBe('free');
   });
 
-  test('401 token_invalidated → persistTerminalState session_terminated, return synthetic 503', async () => {
+  test('persistent token_invalidated is relayed after reload and refresh recovery', async () => {
     seedFreshAccessToken();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(errorJson(401, { error: { code: 'token_invalidated', message: 'session ended' } }));
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'token_invalidated', message: 'session ended' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'token_invalidated', message: 'still ended' } }))
+      .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'token_invalidated', message: 'still ended after refresh' } }));
     const effects = makeEffects();
     const result = await callCodexResponsesCompact({
       upstreamId, account: activeAccount, model,
       body: { input: [] }, headers: new Headers(), effects, call: noopUpstreamCallOptions(),
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.response.status).toBe(503);
-    expect(effects.persistTerminalState).toHaveBeenCalledWith('session_terminated', expect.stringMatching(/session ended/));
+    if (!result.ok) {
+      expect(result.response.status).toBe(401);
+      await expect(result.response.json()).resolves.toMatchObject({ error: { code: 'token_invalidated' } });
+    }
+    expect(effects.persistTerminalState).not.toHaveBeenCalled();
   });
 
   test('429 → quota with ratelimited_until, return upstream 429', async () => {
@@ -1473,6 +1498,7 @@ describe('callCodexAlphaSearch', () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at1', refresh_token: 'rt1', id_token: idToken('free') }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
+      .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
       .mockResolvedValueOnce(errorJson(200, { encrypted_output: null, output: 'Search result', results: [] }));
     const result = await callCodexAlphaSearch({

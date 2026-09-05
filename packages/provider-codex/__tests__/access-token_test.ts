@@ -367,7 +367,7 @@ describe('mintCodexAccessToken', () => {
     expect(entry.expiresAt).toBe(1_800_000_000_000);
     expect(entry.planType).toBe('team');
     expect(entry.planObservedAt).toBe(entry.refreshedAt);
-    expect(persistRotation).toHaveBeenCalledWith('rt_v2');
+    expect(persistRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
   });
 
   test('accepts refreshed id_tokens without import-only identity or plan claims', async () => {
@@ -410,7 +410,7 @@ describe('mintCodexAccessToken', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ refresh_token: 'rt_v2' }), { status: 200 }));
     const persistRotation = vi.fn(async () => {});
     await expect(mintCodexAccessToken('rt_v1', null, directFetcher, persistRotation)).rejects.toThrow(/no previous access token/);
-    expect(persistRotation).toHaveBeenCalledWith('rt_v2');
+    expect(persistRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
   });
 
   test('marks a new access token without a valid exp immediately stale', async () => {
@@ -428,6 +428,6 @@ describe('mintCodexAccessToken', () => {
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const persistRotation = vi.fn(async () => {});
     await expect(mintCodexAccessToken('rt_v1', null, directFetcher, persistRotation)).rejects.toThrow(/chatgpt_plan_type/);
-    expect(persistRotation).toHaveBeenCalledWith('rt_v2');
+    expect(persistRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
   });
 });

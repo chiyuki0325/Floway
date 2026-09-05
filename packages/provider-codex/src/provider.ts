@@ -64,22 +64,28 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
     return locateActiveAccount(fresh.state);
   };
 
-  const persistRefreshTokenRotation = async (newRefreshToken: string): Promise<void> => {
+  const persistRefreshTokenRotation = async (newRefreshToken: string, expectedRefreshToken: string): Promise<void> => {
     const rotatedAt = new Date().toISOString();
     await getProviderRepo().upstreams.saveState(record.id, current => {
-      const { state, accountIndex } = locateActiveAccount(current);
-      return replaceCodexAccount(state, accountIndex, account => ({ ...account, refresh_token: newRefreshToken, state_updated_at: rotatedAt }));
+      const { state, accountIndex, account } = locateActiveAccount(current);
+      if (account.refresh_token !== expectedRefreshToken) return current;
+      return replaceCodexAccount(state, accountIndex, candidate => {
+        const { state_message: _stateMessage, ...rest } = candidate;
+        return { ...rest, refresh_token: newRefreshToken, state: 'active', state_updated_at: rotatedAt };
+      });
     });
   };
 
-  const persistTerminalState = async (newState: 'session_terminated' | 'refresh_failed', message: string): Promise<void> => {
+  const persistTerminalState = async (
+    newState: 'session_terminated' | 'refresh_failed',
+    message: string,
+    expectedRefreshToken: string,
+  ): Promise<void> => {
     const flippedAt = new Date().toISOString();
     await getProviderRepo().upstreams.saveState(record.id, current => {
-      const { state, accountIndex } = locateActiveAccount(current);
-      // Clear any cached access token on the terminal flip — once the credential
-      // is dead the cached token is dead too, and leaving it would confuse the
-      // dashboard's status panel.
-      return replaceCodexAccount(state, accountIndex, account => ({ ...account, state: newState, state_message: message, state_updated_at: flippedAt, accessToken: null }));
+      const { state, accountIndex, account } = locateActiveAccount(current);
+      if (account.refresh_token !== expectedRefreshToken) return current;
+      return replaceCodexAccount(state, accountIndex, candidate => ({ ...candidate, state: newState, state_message: message, state_updated_at: flippedAt, accessToken: null }));
     });
   };
 
@@ -95,12 +101,15 @@ export const createCodexProvider = (record: UpstreamRecord): Provider => {
       // active, then rethrow so the caller's models-cache records the
       // failure and surfaces it to the operator.
       let access;
+      let expectedRefreshToken = locateActiveAccount(record.state).account.refresh_token;
       try {
-        access = await ensureCodexAccessToken(record.id, accountIdentity.chatgptAccountId, (refreshToken, previousAccessToken) =>
-          mintCodexAccessToken(refreshToken, previousAccessToken, fetcher, persistRefreshTokenRotation));
+        access = await ensureCodexAccessToken(record.id, accountIdentity.chatgptAccountId, (refreshToken, previousAccessToken) => {
+          expectedRefreshToken = refreshToken;
+          return mintCodexAccessToken(refreshToken, previousAccessToken, fetcher, persistRefreshTokenRotation);
+        });
       } catch (err) {
         if (err instanceof CodexOAuthSessionTerminatedError) {
-          await persistTerminalState('refresh_failed', err.upstreamMessage);
+          await persistTerminalState('refresh_failed', err.upstreamMessage, expectedRefreshToken);
         }
         throw err;
       }

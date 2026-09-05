@@ -116,6 +116,19 @@ export const putCodexAccessToken = async (
 ): Promise<CodexAccessTokenEntry> =>
   (await persistAccessToken(upstreamId, accountId, entry, 'putCodexAccessToken', fallbackPlan)) ?? entry;
 
+export const reloadCodexAccessToken = async (
+  upstreamId: string,
+  accountId: string | undefined,
+  fallback: CodexAccessTokenEntry,
+): Promise<CodexAccessTokenEntry> => {
+  const fresh = await getProviderRepo().upstreams.getById(upstreamId);
+  if (!fresh) throw new Error(`Codex upstream ${upstreamId} not found`);
+  const state = readCodexUpstreamState(fresh.state);
+  const account = state.accounts.find(candidate => candidate.chatgptAccountId === accountId);
+  if (!account) throw new Error(`Codex account ${accountId} not found in upstream ${upstreamId}`);
+  return account.accessToken ?? fallback;
+};
+
 export const invalidateCodexAccessToken = async (
   upstreamId: string,
   accountId: string | undefined,
@@ -152,11 +165,7 @@ export const invalidateCodexAccessToken = async (
 // stored. If a sibling rotated, we return their freshly-minted access token
 // — the caller treats it as a normal cache hit. If the stored value hasn't
 // moved, we re-raise the original error so the data-plane / control-plane
-// caller flips the row to `refresh_failed`. Mirrors sub2api
-// `oauth_refresh_api.go:tryRecoverFromRefreshRace` (lines 173-193). All
-// other terminal codes (`app_session_terminated`, `invalid_refresh_token`,
-// `invalid_client`, `unauthorized_client`, `access_denied`) signal
-// credential death under any race scenario and skip recovery.
+// caller can bind a `refresh_failed` transition to that refresh generation.
 // Process-local coalescing of concurrent ensure calls. On a cold start N
 // requests on the same isolate would all see `accessToken === null` and
 // each POST /oauth/token; the upstream rotates on every call so only one
@@ -279,11 +288,11 @@ export const mintCodexAccessToken = async (
   refreshToken: string,
   previousAccessToken: CodexAccessTokenEntry | null,
   fetcher: Fetcher,
-  persistRefreshTokenRotation: (newRefreshToken: string) => Promise<void>,
+  persistRefreshTokenRotation: (newRefreshToken: string, expectedRefreshToken: string) => Promise<void>,
 ): Promise<CodexAccessTokenEntry> => {
   const tokens = await refreshCodexAccessToken(refreshToken, fetcher);
   if (tokens.refresh_token !== undefined && tokens.refresh_token !== refreshToken) {
-    await persistRefreshTokenRotation(tokens.refresh_token);
+    await persistRefreshTokenRotation(tokens.refresh_token, refreshToken);
   }
 
   const now = Date.now();
