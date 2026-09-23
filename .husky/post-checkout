@@ -1,9 +1,8 @@
 #!/bin/sh
-# Keep the main worktree pinned to `main`. Linked worktrees — wherever they
-# live on disk — are free to be on any branch, tag, or revision; the agent
-# rules forbid in-flight work on main itself, so any checkout that moves
-# the main worktree off `main` is reverted immediately and reported as an
-# error.
+# Keep the main worktree pinned to a deployment branch. Linked worktrees —
+# wherever they live on disk — are free to be on any branch, tag, or revision.
+# Production uses `deployment`; `main` remains allowed for repository setup
+# and recovery operations.
 
 new_head="$2"
 branch_flag="$3"
@@ -30,18 +29,20 @@ esac
 # so a `prev == new` test reads "same commit", not "same branch". Branch
 # creation at HEAD (`git checkout -b`) and a switch between two refs pointing
 # at one commit both leave the ids equal while moving the worktree off `main`.
-# `main` is the only acceptable HEAD, whatever the ids say. Husky runs us under
+# `main` and `deployment` are acceptable HEADs, whatever the ids say. Husky runs us under
 # `sh -e`, so detached-HEAD failures from `git symbolic-ref` must be swallowed
 # explicitly — otherwise set -e kills the hook before we can react.
 current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-[ "$current_branch" = "main" ] && exit 0
+case "$current_branch" in
+  main | deployment) exit 0 ;;
+esac
 
 short_head=$(git rev-parse --short "$new_head" 2>/dev/null || true)
 target_label=${current_branch:-$short_head}
 target_label=${target_label:-$new_head}
 
 cat >&2 <<MSG
-ERROR! The main worktree must stay on \`main\`; refusing checkout to \`${target_label}\`.
+ERROR! The main worktree must stay on \`main\` or \`deployment\`; refusing checkout to \`${target_label}\`.
 Use a linked worktree for any other branch/tag/revision:
   git worktree add .worktrees/<name> <branch-or-ref>
 Restoring the main worktree to \`main\`...

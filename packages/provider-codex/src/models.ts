@@ -304,7 +304,7 @@ export const codexRawToProviderModel = (raw: CodexRawModel, enabledFlags: Readon
         max_prompt_tokens: Math.floor(raw.context_window * raw.catalog.effective_context_window_percent / 100),
       }),
     },
-    endpoints: { responses: {} },
+    endpoints: { openaiResponses: {} },
     enabledFlags,
     ...(Object.keys(providerData).length > 0 ? { providerData } : {}),
     ...(pricing ? { pricing } : {}),
@@ -327,7 +327,7 @@ export const codexImageProviderModel = (enabledFlags: ReadonlySet<FlagId>): Prov
   owned_by: 'openai',
   kind: 'image',
   limits: {},
-  endpoints: { imagesGenerations: {}, imagesEdits: {} },
+  endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} },
   enabledFlags,
   pricing: GPT_IMAGE_2_PRICING,
 });
