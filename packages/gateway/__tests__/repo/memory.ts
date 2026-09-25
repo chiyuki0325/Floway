@@ -829,17 +829,21 @@ class MemoryUpstreamRepo implements UpstreamRepo {
 
 }
 
-const cloneUpstreamRecord = (upstream: StoredUpstreamRecord): StoredUpstreamRecord => ({
-  ...upstream,
-  config: structuredClone(upstream.config),
-  state: upstream.state === null || upstream.state === undefined ? null : structuredClone(upstream.state),
-  modelsCache: structuredClone(upstream.modelsCache),
-  flagOverrides: normalizeFlagOverrides(upstream.flagOverrides),
-  disabledPublicModelIds: normalizeDisabledPublicModelIds(upstream.disabledPublicModelIds),
-  proxyFallbackList: normalizeProxyFallbackList(upstream.proxyFallbackList),
-  modelPrefix: structuredClone(upstream.modelPrefix),
-  hue: upstream.hue,
-});
+const cloneUpstreamRecord = (upstream: StoredUpstreamRecord): StoredUpstreamRecord => {
+  const cloned: StoredUpstreamRecord = {
+    ...upstream,
+    config: structuredClone(upstream.config),
+    state: upstream.state === null || upstream.state === undefined ? null : structuredClone(upstream.state),
+    modelsCache: structuredClone(upstream.modelsCache),
+    flagOverrides: normalizeFlagOverrides(upstream.flagOverrides),
+    disabledPublicModelIds: normalizeDisabledPublicModelIds(upstream.disabledPublicModelIds),
+    proxyFallbackList: normalizeProxyFallbackList(upstream.proxyFallbackList),
+    modelPrefix: structuredClone(upstream.modelPrefix),
+    hue: upstream.hue,
+  };
+  if (cloned.maxConcurrentRequests === null) delete cloned.maxConcurrentRequests;
+  return cloned;
+};
 
 const openaiResponsesCleanupDueAt = async (
   apiKeys: ApiKeyRepo,

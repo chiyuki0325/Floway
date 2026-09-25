@@ -1177,7 +1177,7 @@ const toUpstreamRecord = (row: UpstreamRow): StoredUpstreamRecord => {
     proxyFallbackList: parseProxyFallbackList(row.id, row.proxy_fallback_list_json),
     modelPrefix: parseModelPrefix(row.id, row.model_prefix_json),
     hue: parseUpstreamHue(row.id, row.hue),
-    maxConcurrentRequests: row.max_concurrent_requests,
+    ...(row.max_concurrent_requests === null ? {} : { maxConcurrentRequests: row.max_concurrent_requests }),
   };
 };
 
