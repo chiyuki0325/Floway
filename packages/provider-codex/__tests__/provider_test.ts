@@ -347,12 +347,20 @@ describe('createCodexProvider', () => {
     expect(body.stream_options).toEqual({ reasoning_summary_delivery: 'sequential_cutoff' });
   });
 
-  test('callOpenAIResponses keeps Codex-supported fields when dispatching unary compact', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+  test('callOpenAIResponses appends a compaction trigger and collects the Responses stream', async () => {
+    const response = {
       id: 'resp_compact',
-      object: 'response.compaction',
+      object: 'response',
+      model: 'gpt-5.4',
+      status: 'completed',
       output: [{ id: 'cmp_1', type: 'compaction', encrypted_content: 'blob' }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      error: null,
+      incomplete_details: null,
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n`,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    ));
     const instance = createCodexProvider(baseRecord);
     const result = await instance.instance.callOpenAIResponses(
       stubProviderModel({ id: 'gpt-5.4', display_name: 'gpt-5.4', endpoints: { responses: {} } }),
@@ -378,8 +386,14 @@ describe('createCodexProvider', () => {
       parallel_tool_calls: true,
       reasoning: { effort: 'high' },
       text: { verbosity: 'low' },
+      previous_response_id: 'resp_previous',
+      stream: true,
+      store: false,
     });
-    expect(body).not.toHaveProperty('previous_response_id');
+    expect(body.input).toEqual([
+      { type: 'message', role: 'user', content: 'compact this' },
+      { type: 'compaction_trigger' },
+    ]);
   });
 
   test('callOpenAIResponses re-reads state per request (operator re-import takes effect)', async () => {

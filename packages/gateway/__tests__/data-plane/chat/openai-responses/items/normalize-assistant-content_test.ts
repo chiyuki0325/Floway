@@ -7,11 +7,25 @@ import { assert, assertEquals } from '@floway-dev/test-utils';
 test('rewrites assistant-role input_text content blocks to output_text', () => {
   const input: OpenAIResponsesInputItem[] = [
     { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
-    { type: 'message', role: 'assistant', content: [{ type: 'input_text', text: 'prior reply' }] },
+    {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'input_text', text: 'prior reply' }],
+      internal_chat_message_metadata_passthrough: {
+        executed_tool_calls: [{ tool_result_metadata: { provider: { id: 'result-1' } } }],
+      },
+    },
   ];
   const out = normalizeAssistantInputText(input);
   assertEquals((out as OpenAIResponsesInputItem[])[0], { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] });
-  assertEquals((out as OpenAIResponsesInputItem[])[1], { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'prior reply' }] });
+  assertEquals((out as OpenAIResponsesInputItem[])[1], {
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'prior reply' }],
+    internal_chat_message_metadata_passthrough: {
+      executed_tool_calls: [{ tool_result_metadata: { provider: { id: 'result-1' } } }],
+    },
+  });
 });
 
 test('returns the input array reference unchanged when nothing needs rewriting', () => {

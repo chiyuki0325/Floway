@@ -26,16 +26,6 @@ export const CODEX_OPENAI_RESPONSES_PATH = '/codex/responses';
 // Codex appends `alpha/search` to its ChatGPT model-provider base.
 // https://github.com/openai/codex/blob/2e1607ee2fa8099a233df7437adee5f16a741905/codex-rs/codex-api/src/endpoint/search.rs#L31-L47
 export const CODEX_ALPHA_SEARCH_PATH = '/codex/alpha/search';
-// Native unary compaction endpoint. The Codex CLI defaults to a client-side
-// `RemoteCompactionV2` path that re-uses `/codex/responses` with an appended
-// `compaction_trigger` item, but the server still serves this canonical
-// `/responses/compact` URL — the same one Azure OpenAI and the public
-// `api.openai.com` OpenAI Responses surface expose — and the Codex CLI's
-// `ApiCompactClient` keeps it as the fallback transport. We prefer the unary
-// endpoint so the provider behaves identically to every other
-// `/responses/compact` upstream and skips the SSE drain entirely.
-// Reference: https://github.com/openai/codex/blob/f5f812389ee49ab4c9ef1237781ea1013e733fdc/codex-rs/core/src/client.rs#L155
-export const CODEX_OPENAI_RESPONSES_COMPACT_PATH = '/codex/responses/compact';
 export const CODEX_MODELS_PATH = '/codex/models';
 
 // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/model-provider/src/bearer_auth_provider.rs#L31-L45
@@ -54,8 +44,8 @@ export const CODEX_OPENAI_IMAGES_EDITS_PATH = '/codex/images/edits';
 // /codex/models gate themselves behind `minimal_client_version`, so a stale
 // value silently truncates the model list. Keep this aligned with the bundled
 // Codex catalog and its Responses wire capabilities.
-// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/Cargo.toml#L150
-export const CODEX_CLI_VERSION = '0.153.4';
+// https://github.com/openai/codex/blob/fe74a774532af67b5a4a3dec03ce9469e17f89af/codex-rs/Cargo.toml#L153
+export const CODEX_CLI_VERSION = '0.156.0';
 
 // Shared official Codex data-plane identity for /codex/models and
 // /codex/responses. The User-Agent intentionally includes Codex's normal

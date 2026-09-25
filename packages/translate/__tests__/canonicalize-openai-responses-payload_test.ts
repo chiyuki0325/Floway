@@ -24,7 +24,14 @@ test('canonicalizes string and implicit-message wire inputs', () => {
         ],
       },
       { type: 'message', role: 'user', content: 'hello' },
-      { type: 'function_call_output', call_id: 'call_1', output: 'result' },
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: 'result',
+        internal_chat_message_metadata_passthrough: {
+          executed_tool_calls: [{ tool_result_metadata: { provider: { id: 'result-1' } } }],
+        },
+      },
     ],
   }), {
     model: 'gpt-test',
@@ -40,7 +47,14 @@ test('canonicalizes string and implicit-message wire inputs', () => {
         ],
       },
       { type: 'message', role: 'user', content: 'hello' },
-      { type: 'function_call_output', call_id: 'call_1', output: 'result' },
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: 'result',
+        internal_chat_message_metadata_passthrough: {
+          executed_tool_calls: [{ tool_result_metadata: { provider: { id: 'result-1' } } }],
+        },
+      },
     ],
   });
 });

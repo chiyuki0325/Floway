@@ -11,7 +11,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('fetchCodexCatalog', () => {
   test('calls /codex/models with auth + identity headers, returns parsed catalog from {models: [...]}', async () => {
-    expect(CODEX_CLI_VERSION).toBe('0.153.4');
+    expect(CODEX_CLI_VERSION).toBe('0.156.0');
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
       models: [
         { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', context_window: 272000, max_context_window: 1000000 },
@@ -157,6 +157,8 @@ describe('fetchCodexCatalog', () => {
         effective_context_window_percent: 90,
         input_modalities: ['text', 'image', 'audio'],
         supported_reasoning_levels: [{ effort: 'high', description: 'Deep' }],
+        available_access_programs: { cyber: ['program-a', 'future-program'] },
+        supports_experimental_context: true,
         support_verbosity: true,
         default_verbosity: 'low',
         service_tiers: [{ id: 'priority', name: 'Fast', description: 'Faster' }],
@@ -193,6 +195,8 @@ describe('fetchCodexCatalog', () => {
       max_context_window: 1000000,
       effective_context_window_percent: 90,
       input_modalities: ['text', 'image', 'audio'],
+      available_access_programs: { cyber: ['program-a', 'future-program'] },
+      supports_experimental_context: true,
       support_verbosity: true,
       default_verbosity: 'low',
       service_tiers: [{ id: 'priority', name: 'Fast', description: 'Faster' }],
@@ -230,6 +234,16 @@ describe('fetchCodexCatalog', () => {
       models: [{ slug: 'gpt-x', display_name: 'GPT-X', context_window: 1, service_tiers: [{ id: 'priority', name: 42, description: 'Fast' }] }],
     }));
     await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(/service_tiers malformed/);
+  });
+
+  test.each([
+    ['available_access_programs', { cyber: [42] }, /available_access_programs\.cyber malformed/],
+    ['supports_experimental_context', 'true', /supports_experimental_context malformed/],
+  ])('rejects malformed %s', async (field, malformed, expected) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({
+      models: [{ slug: 'gpt-x', display_name: 'GPT-X', context_window: 1, [field]: malformed }],
+    }));
+    await expect(fetchCodexCatalog({ accessToken: 'at', accountId: 'acc', fetcher: directFetcher })).rejects.toThrow(expected);
   });
 });
 
@@ -388,14 +402,10 @@ describe('codexRawToProviderModel', () => {
     });
   });
 
-  // The upstream states the two facts independently: the bundled catalog at
-  // packages/gateway/src/data-plane/codex/catalog/bundled.json records `gpt-5.2`
-  // taking images while rejecting detail 'original', so the mapper must carry
-  // each fact on its own.
   test('keeps image_detail_original independent of the modality list', () => {
     const m = codexRawToProviderModel({
-      id: 'gpt-5.2',
-      display_name: 'GPT-5.2',
+      id: 'gpt-example',
+      display_name: 'GPT Example',
       context_window: 272000,
       input_modalities: ['text', 'image'],
       image_detail_original: false,

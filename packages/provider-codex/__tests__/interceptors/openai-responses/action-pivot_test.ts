@@ -1,20 +1,20 @@
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
-import type { OpenAIResponsesBoundaryCtx } from '../../../src/interceptors/responses/types.ts';
+import type { OpenAIResponsesBoundaryCtx } from '../../../src/interceptors/openai-responses/types.ts';
 import { createUpstreamStateRepoStub } from '../../upstream-state-repo.ts';
 import type { Interceptor } from '@floway-dev/interceptor';
 import { initProviderRepo, type ProviderOpenAIResponsesResult, type UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals, readJsonRequest } from '@floway-dev/test-utils';
 
-// Codex dispatches from the post-chain action, so a pivot must select both
-// the unary endpoint and its provider-specific wire projector.
+// Codex dispatches from the post-chain action, so a pivot must append the
+// compaction trigger before using the shared Responses stream.
 const pivotGenerateToCompact: Interceptor<OpenAIResponsesBoundaryCtx, object, ProviderOpenAIResponsesResult> = async (ctx, _env, run) => {
   ctx.action = 'compact';
   return await run();
 };
 
-vi.mock('../../../src/interceptors/responses/index.ts', async () => {
-  const original = await vi.importActual<typeof import('../../../src/interceptors/responses/index.ts')>('../../../src/interceptors/responses/index.ts');
+vi.mock('../../../src/interceptors/openai-responses/index.ts', async () => {
+  const original = await vi.importActual<typeof import('../../../src/interceptors/openai-responses/index.ts')>('../../../src/interceptors/openai-responses/index.ts');
   return {
     ...original,
     CODEX_OPENAI_RESPONSES_BOUNDARY: [...original.CODEX_OPENAI_RESPONSES_BOUNDARY, pivotGenerateToCompact],
@@ -54,28 +54,33 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
-const compactJsonResponse = (): Response => new Response(
-  JSON.stringify({
+const compactSseResponse = (): Response => {
+  const response = {
     id: 'resp_pivot',
-    object: 'response.compaction',
+    object: 'response',
     created_at: 0,
     status: 'completed',
     model: 'gpt-5.4',
     output: [{ id: 'cmp_x', type: 'compaction', encrypted_content: 'BLOB' }],
-  }),
-  { status: 200, headers: { 'content-type': 'application/json' } },
-);
+    error: null,
+    incomplete_details: null,
+  };
+  return new Response(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n`, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+};
 
 test('Codex terminal dispatches a post-chain compact action with the Codex compact shape', async () => {
   let compactUrl: string | undefined;
   let compactBody: Record<string, unknown> | undefined;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
-    if (url.endsWith('/codex/responses/compact')) {
+    if (url.endsWith('/codex/responses')) {
       compactUrl = url;
       if (init === undefined) throw new Error('expected compact request init');
       compactBody = await readJsonRequest(init) as Record<string, unknown>;
-      return compactJsonResponse();
+      return compactSseResponse();
     }
     throw new Error(`unexpected fetch ${url}`);
   });
@@ -100,15 +105,20 @@ test('Codex terminal dispatches a post-chain compact action with the Codex compa
   if (!result.ok) throw new Error('expected ok result');
   if (result.action !== 'compact') throw new Error(`expected compact variant after pivot, got ${result.action}`);
 
-  if (compactUrl === undefined) throw new Error('expected /codex/responses/compact to be hit');
+  if (compactUrl === undefined) throw new Error('expected /codex/responses to be hit');
   if (compactBody === undefined) throw new Error('expected compact body capture');
 
-  assertEquals('input' in compactBody, true);
   assertEquals(compactBody.model, 'gpt-5.4');
+  assertEquals(compactBody.input, [
+    { type: 'message', role: 'user', content: 'hi' },
+    { type: 'compaction_trigger' },
+  ]);
   assertEquals(compactBody.tools, [{ type: 'function', name: 'noop', description: 'noop', parameters: { type: 'object' }, strict: false }]);
   assertEquals(compactBody.reasoning, { effort: 'medium' });
-  assertEquals(compactBody.parallel_tool_calls, false);
-  for (const banned of ['temperature', 'max_output_tokens', 'stream']) {
+  assertEquals(compactBody.parallel_tool_calls, true);
+  assertEquals(compactBody.stream, true);
+  assertEquals(compactBody.store, false);
+  for (const banned of ['temperature', 'max_output_tokens']) {
     assertEquals(banned in compactBody, false, `compact wire body must not carry unsupported field "${banned}"`);
   }
 });

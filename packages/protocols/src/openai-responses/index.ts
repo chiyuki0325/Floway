@@ -118,7 +118,11 @@ export type OpenAIResponsesInputItem =
 
 export type OpenAIResponsesMessagePhase = 'commentary' | 'final_answer' | (string & {}) | null;
 
-export interface OpenAIResponsesInputMessage {
+export interface OpenAIResponsesInternalMetadataItem {
+  internal_chat_message_metadata_passthrough?: Record<string, unknown>;
+}
+
+export interface OpenAIResponsesInputMessage extends OpenAIResponsesInternalMetadataItem {
   type: 'message';
   id?: string;
   status?: string;
@@ -203,7 +207,7 @@ export interface OpenAIResponsesInputFile {
   [key: string]: unknown;
 }
 
-export interface OpenAIResponsesInputReasoning {
+export interface OpenAIResponsesInputReasoning extends OpenAIResponsesInternalMetadataItem {
   type: 'reasoning';
   id: string;
   summary: { type: 'summary_text'; text: string }[];
@@ -221,7 +225,7 @@ export type OpenAIResponsesToolCaller =
   | { type: 'direct' }
   | { type: 'program'; caller_id: string };
 
-export interface OpenAIResponsesFunctionToolCallItem {
+export interface OpenAIResponsesFunctionToolCallItem extends OpenAIResponsesInternalMetadataItem {
   type: 'function_call';
   id?: string;
   call_id: string;
@@ -232,7 +236,7 @@ export interface OpenAIResponsesFunctionToolCallItem {
   caller?: OpenAIResponsesToolCaller | null;
 }
 
-export interface OpenAIResponsesFunctionCallOutputItem {
+export interface OpenAIResponsesFunctionCallOutputItem extends OpenAIResponsesInternalMetadataItem {
   type: 'function_call_output';
   id?: string;
   call_id: string;
@@ -246,7 +250,7 @@ export interface OpenAIResponsesFunctionCallOutputItem {
 // Freeform custom tool invocation echoed back to the model in conversation
 // history. The model's own emission of a custom tool call is identical in
 // shape (it is also a `custom_tool_call` item).
-export interface OpenAIResponsesCustomToolCallItem {
+export interface OpenAIResponsesCustomToolCallItem extends OpenAIResponsesInternalMetadataItem {
   type: 'custom_tool_call';
   call_id: string;
   name: string;
@@ -257,7 +261,7 @@ export interface OpenAIResponsesCustomToolCallItem {
   caller?: OpenAIResponsesToolCaller | null;
 }
 
-export interface OpenAIResponsesCustomToolCallOutputItem {
+export interface OpenAIResponsesCustomToolCallOutputItem extends OpenAIResponsesInternalMetadataItem {
   type: 'custom_tool_call_output';
   call_id: string;
   output: string | OpenAIResponsesToolOutputContent[];
@@ -274,7 +278,7 @@ export interface OpenAIResponsesItemReference {
 // Tolerant input mirror of OpenAIResponsesOutputWebSearchCall: clients may
 // echo previously emitted web_search_call items back. Every field is
 // optional so the wire shape accepts whatever the client carries.
-export interface OpenAIResponsesInputWebSearchCall {
+export interface OpenAIResponsesInputWebSearchCall extends OpenAIResponsesInternalMetadataItem {
   type: 'web_search_call';
   id?: string;
   status?: 'completed' | 'in_progress' | 'searching' | 'failed';
@@ -473,7 +477,7 @@ export interface OpenAIResponsesContextCompactionItem extends OpenAIResponsesPer
 }
 
 // https://github.com/openai/openai-node/blob/39a15b412fc129df15339ebd6e3e6547854aa81f/src/resources/responses/responses.ts#L1918-L1963
-export interface OpenAIResponsesCompactionItem {
+export interface OpenAIResponsesCompactionItem extends OpenAIResponsesInternalMetadataItem {
   type: 'compaction';
   id?: string | null;
   encrypted_content: string;
@@ -502,7 +506,7 @@ export interface OpenAIResponsesCodeInterpreterCallItem {
 // Legacy local-shell output is opaque text correlated by `call_id`; modern
 // shell output uses structured stdout/stderr/outcome chunks below.
 // https://github.com/openai/openai-agents-python/blob/2fa463571e76dae8ff267622f1018eaf06ffeb9f/tests/test_local_shell_tool.py#L46-L92
-export interface OpenAIResponsesLocalShellCallItem {
+export interface OpenAIResponsesLocalShellCallItem extends OpenAIResponsesInternalMetadataItem {
   type: 'local_shell_call';
   id: string;
   call_id: string;
@@ -517,7 +521,7 @@ export interface OpenAIResponsesLocalShellCallItem {
   status: string;
 }
 
-export interface OpenAIResponsesLocalShellCallOutputItem {
+export interface OpenAIResponsesLocalShellCallOutputItem extends OpenAIResponsesInternalMetadataItem {
   type: 'local_shell_call_output';
   id?: string | null;
   call_id: string;
@@ -530,7 +534,7 @@ export type OpenAIResponsesShellEnvironment =
   | { type: 'container_reference'; container_id: string };
 
 // https://github.com/openai/openai-node/blob/39a15b412fc129df15339ebd6e3e6547854aa81f/src/resources/responses/responses.ts#L3154-L3344
-export interface OpenAIResponsesShellCallItem {
+export interface OpenAIResponsesShellCallItem extends OpenAIResponsesInternalMetadataItem {
   type: 'shell_call';
   id?: string | null;
   call_id: string;
@@ -545,7 +549,7 @@ export interface OpenAIResponsesShellCallItem {
   created_by?: string;
 }
 
-export interface OpenAIResponsesShellCallOutputItem {
+export interface OpenAIResponsesShellCallOutputItem extends OpenAIResponsesInternalMetadataItem {
   type: 'shell_call_output';
   id?: string | null;
   call_id: string;
@@ -567,7 +571,7 @@ export type OpenAIResponsesApplyPatchOperation =
   | { type: 'update_file'; path: string; diff: string };
 
 // https://github.com/openai/openai-node/blob/39a15b412fc129df15339ebd6e3e6547854aa81f/src/resources/responses/responses.ts#L1472-L1643
-export interface OpenAIResponsesApplyPatchCallItem {
+export interface OpenAIResponsesApplyPatchCallItem extends OpenAIResponsesInternalMetadataItem {
   type: 'apply_patch_call';
   id?: string | null;
   call_id: string;
@@ -577,7 +581,7 @@ export interface OpenAIResponsesApplyPatchCallItem {
   created_by?: string;
 }
 
-export interface OpenAIResponsesApplyPatchCallOutputItem {
+export interface OpenAIResponsesApplyPatchCallOutputItem extends OpenAIResponsesInternalMetadataItem {
   type: 'apply_patch_call_output';
   id?: string | null;
   call_id: string;
@@ -629,7 +633,7 @@ export interface OpenAIResponsesMcpApprovalResponseItem {
   reason?: string | null;
 }
 
-export interface OpenAIResponsesInputImageGenerationCall {
+export interface OpenAIResponsesInputImageGenerationCall extends OpenAIResponsesInternalMetadataItem {
   type: 'image_generation_call';
   id?: string;
   status?: 'completed' | 'in_progress' | 'generating' | 'failed';

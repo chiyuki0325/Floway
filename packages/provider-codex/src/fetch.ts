@@ -7,7 +7,6 @@ import {
   CODEX_OPENAI_IMAGES_EDITS_PATH,
   CODEX_OPENAI_IMAGES_GENERATIONS_PATH,
   CODEX_ORIGINATOR,
-  CODEX_OPENAI_RESPONSES_COMPACT_PATH,
   CODEX_OPENAI_RESPONSES_PATH,
   CODEX_USER_AGENT,
 } from './constants.ts';
@@ -22,7 +21,7 @@ import type { CodexAccessTokenEntry, CodexAccountCredential } from './state.ts';
 import { isEventStreamMediaType } from '@floway-dev/protocols/common';
 import type { OpenAIImagesGenerationsPayload } from '@floway-dev/protocols/openai-images';
 import type { CanonicalOpenAIResponsesPayload, OpenAIResponsesCompactionResult, OpenAIResponsesInputAdditionalToolsItem, OpenAIResponsesInputItem, OpenAIResponsesNamespaceTool, OpenAIResponsesStreamEvent, OpenAIResponsesTool } from '@floway-dev/protocols/openai-responses';
-import { parseOpenAIResponsesStream } from '@floway-dev/protocols/openai-responses';
+import { collectOpenAIResponsesProtocolEventsToResult, parseOpenAIResponsesStream } from '@floway-dev/protocols/openai-responses';
 import { jsonRequestBody, serializeOpenAIImagesEditsJsonPayload, type OpenAIImagesEditsRequest, type ProviderCallResult, type ProviderModel, type ProviderStreamResult, streamingProviderCall, type UpstreamCallOptions } from '@floway-dev/provider';
 
 export type ProviderCompactionResult =
@@ -85,7 +84,7 @@ export const callCodexOpenAIResponses = async (opts: CallCodexOpenAIResponsesOpt
 export const callCodexOpenAIResponsesCompact = async (opts: CallCodexOpenAIResponsesCompactOptions): Promise<ProviderCompactionResult> => {
   const ready = await prepareCodexCall(opts);
   if (!ready.ok) return { ok: false, modelKey: opts.model.id, response: ready.response };
-  return await performUnaryCompactCall(opts, ready.accessToken, 0, prepareUnaryCompactCall(opts));
+  return await performStreamingCompactCall(opts, ready.accessToken, 0, prepareStreamingCompactCall(opts));
 };
 
 export const callCodexAlphaSearch = async (opts: CallCodexAlphaSearchOptions): Promise<ProviderCallResult> => {
@@ -153,6 +152,7 @@ const mintAccessToken = (
 interface CodexRequestIdentity {
   installationId: string;
   sessionId: string;
+  responsesSessionId: string;
   threadId: string;
   clientRequestId: string;
   turnId: string;
@@ -258,10 +258,10 @@ const IDENTITY_MIRRORED_TURN_METADATA_KEYS = new Set<string>([
   'context_window_id', 'installation_id', 'session_id', 'thread_id', 'turn_id', 'window_id', 'window_number',
 ]);
 
-// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/responses_metadata.rs#L27-L101
+// https://github.com/openai/codex/blob/fe74a774532af67b5a4a3dec03ce9469e17f89af/codex-rs/core/src/responses_metadata.rs#L27-L105
 const CURRENT_TURN_METADATA_KEYS = new Set<string>([
   ...IDENTITY_MIRRORED_TURN_METADATA_KEYS,
-  'agent_name', 'auto_review_enabled', 'compaction', 'forked_from_ordinal_exclusive', 'forked_from_thread_id',
+  'agent_name', 'analytics_enabled', 'auto_review_enabled', 'compaction', 'forked_from_ordinal_exclusive', 'forked_from_thread_id',
   'history_ingest_requested', 'node_repl_auto_review_required', 'node_repl_disabled', 'parent_thread_id',
   'parent_turn_id', 'request_kind', 'root_turn_id', 'sandbox', 'sandbox_mode', 'subagent_kind', 'thread_source',
   'tool_namespaces_info', 'turn_started_at_unix_ms', 'turn_trigger', 'workspaces',
@@ -269,7 +269,7 @@ const CURRENT_TURN_METADATA_KEYS = new Set<string>([
 
 const RESERVED_EXTRA_METADATA_KEYS = new Set<string>([
   ...CURRENT_TURN_METADATA_KEYS,
-  'code_mode_tool_names', 'x-codex-installation-id', 'x-codex-parent-thread-id', 'x-codex-turn-metadata',
+  'code_mode_tool_names', 'guardian_credits_requested', 'x-codex-installation-id', 'x-codex-parent-thread-id', 'x-codex-turn-metadata',
   'x-codex-window-id', 'x-openai-subagent',
 ]);
 const MAX_EXTRA_METADATA_ENTRIES = 16;
@@ -280,10 +280,10 @@ const IDENTITY_MIRRORED_CLIENT_METADATA_KEYS = new Set<string>([
   'x-codex-installation-id', 'session_id', 'thread_id', 'x-codex-window-id', 'turn_id', 'x-codex-turn-metadata',
 ]);
 
-// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/responses_metadata.rs#L303-L340
+// https://github.com/openai/codex/blob/fe74a774532af67b5a4a3dec03ce9469e17f89af/codex-rs/core/src/responses_metadata.rs#L443-L475
 const CODEX_CLIENT_METADATA_PROJECTION_KEYS = new Set<string>([
   ...IDENTITY_MIRRORED_CLIENT_METADATA_KEYS,
-  'parent_turn_id', 'root_turn_id', 'x-codex-parent-thread-id', 'x-openai-subagent',
+  'guardian_credits_requested', 'parent_turn_id', 'root_turn_id', 'x-codex-parent-thread-id', 'x-openai-subagent',
 ]);
 
 const buildCodexRequestIdentity = (
@@ -302,6 +302,10 @@ const buildCodexRequestIdentity = (
     ?? trimHeader(opts.headers, 'session_id')
     ?? deriveSessionIdFromInput(body)
     ?? uuidV7();
+  const responsesSessionId = trimHeader(opts.headers, 'session-id')
+    ?? trimHeader(opts.headers, 'session_id')
+    ?? stringField(body as unknown as Record<string, unknown>, 'prompt_cache_key')
+    ?? sessionId;
   const threadId = stringField(clientTurnMetadata, 'thread_id')
     ?? stringField(clientMetadata, 'thread_id')
     ?? trimHeader(opts.headers, 'thread-id')
@@ -328,7 +332,7 @@ const buildCodexRequestIdentity = (
   const turnId = stringField(clientTurnMetadata, 'turn_id')
     ?? stringField(clientMetadata, 'turn_id')
     ?? uuidV7();
-  return { installationId, sessionId, threadId, clientRequestId, turnId, windowId, windowNumber, contextWindowId };
+  return { installationId, sessionId, responsesSessionId, threadId, clientRequestId, turnId, windowId, windowNumber, contextWindowId };
 };
 
 // A stateless caller that re-sends the full conversation every turn would
@@ -453,6 +457,8 @@ const buildCodexClientMetadata = (
   }
   const subagent = stringField(flat, 'x-openai-subagent');
   if (subagent !== null) projected['x-openai-subagent'] = subagent;
+  const guardianCreditsRequested = stringField(flat, 'guardian_credits_requested');
+  if (guardianCreditsRequested !== null) projected.guardian_credits_requested = guardianCreditsRequested;
   return projected;
 };
 
@@ -536,22 +542,6 @@ const projectResponsesLiteBody = (
   return body;
 };
 
-// https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/codex-api/src/common.rs#L46-L66
-const projectCodexCompactBody = (source: Omit<CanonicalOpenAIResponsesPayload, 'model'>): Record<string, unknown> => {
-  const runtimeSource = source as unknown as Record<string, unknown>;
-  return {
-    input: source.input,
-    parallel_tool_calls: source.parallel_tool_calls ?? false,
-    ...(source.instructions !== undefined && { instructions: source.instructions }),
-    ...(source.tools !== undefined && { tools: source.tools }),
-    ...(source.reasoning !== undefined && { reasoning: source.reasoning }),
-    ...(source.service_tier !== undefined && { service_tier: source.service_tier }),
-    ...(source.prompt_cache_key !== undefined && { prompt_cache_key: source.prompt_cache_key }),
-    ...(source.text !== undefined && { text: source.text }),
-    ...(runtimeSource.access_programs !== undefined && { access_programs: runtimeSource.access_programs }),
-  };
-};
-
 const buildCodexOpenAIResponsesBody = (
   opts: CallCodexOpenAIResponsesOptions,
   identity: CodexRequestIdentity,
@@ -572,7 +562,7 @@ const buildCodexOpenAIResponsesBody = (
   const body = codexModelUsesResponsesLite(opts.model)
     ? projectResponsesLiteBody(source, identity)
     : source;
-  if (body.prompt_cache_key === undefined) body.prompt_cache_key = identity.sessionId;
+  if (body.prompt_cache_key === undefined) body.prompt_cache_key = identity.responsesSessionId;
   return body;
 };
 
@@ -595,18 +585,13 @@ const dispatchCodexHttpCall = async (
   headers.set('user-agent', CODEX_USER_AGENT);
   headers.set('accept', accept);
   headers.set('content-type', 'application/json');
-  headers.set('session-id', identity.sessionId);
+  headers.set('session-id', identity.responsesSessionId);
   headers.set('thread-id', identity.threadId);
-  // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L680-L693
-  if (path === CODEX_OPENAI_RESPONSES_COMPACT_PATH) {
-    headers.set('x-codex-installation-id', identity.installationId);
-  } else {
-    headers.set('x-client-request-id', identity.clientRequestId);
-  }
+  headers.set('x-client-request-id', identity.clientRequestId);
   headers.set('x-codex-window-id', identity.windowId);
   if (turnMetadataJson !== null) headers.set('x-codex-turn-metadata', turnMetadataJson);
-  // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L2129-L2135
-  if (codexModelUsesResponsesLite(opts.model) && (path === CODEX_OPENAI_RESPONSES_PATH || path === CODEX_OPENAI_RESPONSES_COMPACT_PATH)) {
+  // https://github.com/openai/codex/blob/fe74a774532af67b5a4a3dec03ce9469e17f89af/codex-rs/core/src/client.rs#L2129-L2135
+  if (codexModelUsesResponsesLite(opts.model) && path === CODEX_OPENAI_RESPONSES_PATH) {
     headers.set('x-openai-internal-codex-responses-lite', 'true');
   }
 
@@ -771,15 +756,20 @@ const prepareStreamingResponsesCall = (opts: CallCodexOpenAIResponsesOptions): P
   };
 };
 
-const prepareUnaryCompactCall = (opts: CallCodexOpenAIResponsesCompactOptions): PreparedCodexHttpCall => {
-  const clientMetadata = clientCodexClientMetadata(opts.body);
+const prepareStreamingCompactCall = (opts: CallCodexOpenAIResponsesCompactOptions): PreparedCodexHttpCall => {
+  const input = opts.body.input.filter(item => item.type !== 'compaction_trigger');
+  const body: Omit<CanonicalOpenAIResponsesPayload, 'model'> = {
+    ...opts.body,
+    input: [...input, { type: 'compaction_trigger' }],
+    parallel_tool_calls: true,
+  };
+  const clientMetadata = clientCodexClientMetadata(body);
   const clientTurnMetadata = callerTurnMetadata(opts, clientMetadata);
-  const identity = buildCodexRequestIdentity(opts, opts.body, clientMetadata, clientTurnMetadata, uuidV7());
-  const turnMetadataJson = buildCodexTurnMetadataJson(identity, { requestKind: 'compaction' }, clientTurnMetadata);
-  const source = { ...projectCodexCompactBody(opts.body), model: opts.model.id };
+  const identity = buildCodexRequestIdentity(opts, body, clientMetadata, clientTurnMetadata, uuidV7());
+  const turnMetadataJson = buildCodexTurnMetadataJson(identity, CODEX_RESPONSES_COMPACTION_V2_TURN_METADATA, clientTurnMetadata);
   return {
     identity,
-    body: codexModelUsesResponsesLite(opts.model) ? projectResponsesLiteBody(source, identity) : source,
+    body: buildCodexOpenAIResponsesBody({ ...opts, body }, identity, turnMetadataJson.body, clientTurnMetadata),
     turnMetadataHeader: turnMetadataJson.header,
   };
 };
@@ -811,31 +801,31 @@ const performStreamingResponsesCall = async (
   return result;
 };
 
-const performUnaryCompactCall = async (
+const performStreamingCompactCall = async (
   opts: CallCodexOpenAIResponsesCompactOptions,
   accessToken: CodexAccessTokenEntry,
   unauthorizedAttempts: number,
   prepared: PreparedCodexHttpCall,
 ): Promise<ProviderCompactionResult> => {
-  const response = await dispatchCodexHttpCall(
+  const upstreamFetch = dispatchCodexHttpCall(
     opts,
     accessToken.token,
-    CODEX_OPENAI_RESPONSES_COMPACT_PATH,
-    'application/json',
+    CODEX_OPENAI_RESPONSES_PATH,
+    'text/event-stream',
     prepared.body,
     prepared.identity,
     prepared.turnMetadataHeader,
-  );
+  ).then(ensureSseContentType);
+  const streamed = await streamingProviderCall(upstreamFetch, parseOpenAIResponsesStream, opts.model.id, opts.signal);
 
-  if (response.status === 401 && unauthorizedAttempts < 2) {
+  if (!streamed.ok && streamed.response.status === 401 && unauthorizedAttempts < 2) {
     const fresh = await recoverAccessTokenAfterUnauthorized(opts, accessToken, unauthorizedAttempts);
     if (!fresh.ok) return { ok: false, modelKey: opts.model.id, response: fresh.response };
-    return await performUnaryCompactCall(opts, fresh.accessToken, unauthorizedAttempts + 1, prepared);
+    return await performStreamingCompactCall(opts, fresh.accessToken, unauthorizedAttempts + 1, prepared);
   }
+  if (!streamed.ok) return streamed;
 
-  if (!response.ok) return { ok: false, modelKey: opts.model.id, response };
-
-  const result = await response.json() as OpenAIResponsesCompactionResult;
+  const result = await collectOpenAIResponsesProtocolEventsToResult(streamed.events);
   return { ok: true, modelKey: opts.model.id, result };
 };
 
@@ -849,6 +839,7 @@ const performAlphaSearchCall = async (
   const identity: CodexRequestIdentity = {
     installationId: opts.account.openaiDeviceId,
     sessionId: requestId,
+    responsesSessionId: requestId,
     threadId: requestId,
     clientRequestId: requestId,
     turnId: uuidV7(),

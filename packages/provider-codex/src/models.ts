@@ -23,6 +23,10 @@ export interface CodexServiceTier {
   description: string;
 }
 
+export interface CodexModelAccessPrograms {
+  cyber: readonly string[];
+}
+
 export interface CodexCatalogCapabilities {
   context_window?: number;
   max_context_window?: number;
@@ -30,6 +34,8 @@ export interface CodexCatalogCapabilities {
   input_modalities: readonly CodexInputModality[];
   supported_reasoning_levels?: readonly CodexReasoningLevel[];
   default_reasoning_level?: string;
+  available_access_programs?: CodexModelAccessPrograms;
+  supports_experimental_context?: boolean;
   use_responses_lite: boolean;
   support_verbosity?: boolean;
   default_verbosity?: string | null;
@@ -153,6 +159,14 @@ const optionalServiceTiers = (value: unknown, field: string): CodexServiceTier[]
   });
 };
 
+const optionalModelAccessPrograms = (value: unknown, field: string): CodexModelAccessPrograms | undefined => {
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value)) throw new TypeError(`${field} malformed`);
+  const cyber = optionalStringArray(value.cyber, `${field}.cyber`);
+  if (cyber === undefined) throw new TypeError(`${field}.cyber malformed`);
+  return { cyber };
+};
+
 const optionalTruncationPolicy = (value: unknown, field: string): { mode: string; limit: number } | undefined => {
   if (value === undefined) return undefined;
   if (!isPlainRecord(value) || typeof value.mode !== 'string' || typeof value.limit !== 'number' || !Number.isSafeInteger(value.limit)) {
@@ -218,6 +232,8 @@ const assertRawModel = (value: unknown): CodexRawModel => {
     input_modalities: inputModalities,
     ...(reasoningLevels !== undefined && { supported_reasoning_levels: reasoningLevels }),
     ...(defaultReasoningLevel !== undefined && { default_reasoning_level: defaultReasoningLevel }),
+    ...defined('available_access_programs', optionalModelAccessPrograms(value.available_access_programs, field('available_access_programs'))),
+    ...defined('supports_experimental_context', optionalBoolean(value.supports_experimental_context, field('supports_experimental_context'))),
     use_responses_lite: useResponsesLite,
     ...defined('support_verbosity', optionalBoolean(value.support_verbosity, field('support_verbosity'))),
     ...defined('default_verbosity', optionalNullableString(value.default_verbosity, field('default_verbosity'))),

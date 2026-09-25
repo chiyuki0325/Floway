@@ -233,7 +233,17 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       model: responsesLiteModel,
       body: {
         instructions: 'Base instructions.',
-        input: [{ type: 'message', role: 'user', content: 'hello' }],
+        input: [
+          { type: 'message', role: 'user', content: 'hello' },
+          {
+            type: 'custom_tool_call_output',
+            call_id: 'call_exec',
+            output: 'done',
+            internal_chat_message_metadata_passthrough: {
+              executed_tool_calls: [{ tool_result_metadata: { provider: { id: 'result-1' } } }],
+            },
+          },
+        ],
         tools: [
           { type: 'web_search' },
           { type: 'function', name: 'exec', parameters: { type: 'object' } },
@@ -278,6 +288,14 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'] },
     });
     expect(input[2]).toEqual({ type: 'message', role: 'user', content: 'hello' });
+    expect(input[3]).toEqual({
+      type: 'custom_tool_call_output',
+      call_id: 'call_exec',
+      output: 'done',
+      internal_chat_message_metadata_passthrough: {
+        executed_tool_calls: [{ tool_result_metadata: { provider: { id: 'result-1' } } }],
+      },
+    });
     expect(tools.map(tool => `${String(tool.type)}:${String(tool.name ?? '')}`)).toEqual([
       'web_search:',
       'namespace:functions',
@@ -787,6 +805,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     expect(turnMetadata.turn_started_at_unix_ms).toBe(1700000000002);
     expect(turnMetadata.installation_id).toBe('canonical-installation');
     expect(turnMetadata.session_id).toBe('canonical-session');
+    expect(headers.get('session-id')).toBe('header-session');
     expect(turnMetadata.thread_id).toBe('canonical-thread');
     expect(turnMetadata.turn_id).toBe('canonical-turn');
     // The window advances on every auto-compaction and the advanced value
@@ -796,6 +815,8 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     expect(turnMetadata.context_window_id).toBe('019cba13-7d2c-75e2-bf79-c970d7bdfe42');
     expect(headers.get('x-codex-window-id')).toBe('canonical-thread:2');
     const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    expect(body.prompt_cache_key).toBe('header-session');
+    expect((body.client_metadata as Record<string, unknown>).session_id).toBe('canonical-session');
     expect((body.client_metadata as Record<string, unknown>).root_turn_id).toBe('canonical-root-turn');
   });
 
@@ -838,9 +859,12 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
       body: {
         input: [], stream: true,
         client_metadata: {
+          guardian_credits_requested: 'true',
           'x-codex-turn-metadata': JSON.stringify({
             request_kind: 'prewarm',
             agent_name: 'worker',
+            analytics_enabled: false,
+            guardian_credits_requested: 'forged-turn-value',
             tool_namespaces_info: { shell: { name: 'shell' } },
             code_mode_tool_names: ['legacy'],
             object_extra: { nested: true },
@@ -859,6 +883,9 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     const bodyMetadata = JSON.parse((body.client_metadata as Record<string, string>)['x-codex-turn-metadata']) as Record<string, unknown>;
     expect(bodyMetadata.request_kind).toBe('prewarm');
     expect(bodyMetadata.agent_name).toBe('worker');
+    expect(bodyMetadata.analytics_enabled).toBe(false);
+    expect(bodyMetadata.guardian_credits_requested).toBeUndefined();
+    expect((body.client_metadata as Record<string, unknown>).guardian_credits_requested).toBe('true');
     expect(bodyMetadata.tool_namespaces_info).toEqual({ shell: { name: 'shell' } });
     expect(headerMetadata.tool_namespaces_info).toBeUndefined();
     expect(bodyMetadata.code_mode_tool_names).toBeUndefined();
@@ -867,6 +894,25 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     expect(bodyMetadata.oversized_extra).toBeUndefined();
     expect(bodyMetadata.extra_15).toBe('value-15');
     expect(bodyMetadata.extra_16).toBeUndefined();
+  });
+
+  test.each([true, false])('preserves analytics_enabled=%s in turn metadata', async analyticsEnabled => {
+    seedFreshAccessToken();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(sseResponse());
+    await callCodexOpenAIResponses({
+      upstreamId, account: activeAccount, model,
+      body: {
+        input: [], stream: true,
+        client_metadata: {
+          'x-codex-turn-metadata': JSON.stringify({ analytics_enabled: analyticsEnabled }),
+        },
+      } as unknown as Parameters<typeof callCodexOpenAIResponses>[0]['body'],
+      headers: new Headers(), effects: makeEffects(), call: noopUpstreamCallOptions(),
+    });
+
+    const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit) as Record<string, unknown>;
+    const metadata = JSON.parse((body.client_metadata as Record<string, string>)['x-codex-turn-metadata']) as Record<string, unknown>;
+    expect(metadata.analytics_enabled).toBe(analyticsEnabled);
   });
 
   test('omits turn and request identity from memory metadata', async () => {
@@ -1209,37 +1255,33 @@ describe('callCodexImagesGenerations', () => {
   });
 });
 
-// `callCodexOpenAIResponsesCompact` shares OAuth + quota + 401-retry plumbing with
-// `callCodexOpenAIResponses` (both go through `prepareCodexCall` →
-// `dispatchCodexHttpCall` → reload/refresh recovery). The streaming
-// suite above pins those shared paths; this block exercises only the
-// compact-specific wire contract — endpoint URL, `Accept: application/json`,
-// body shape (no `stream`, no `store`), unary JSON decoding — plus the 401
-// retry on the unary endpoint to confirm the retry decision is taken from
-// the bare response status (no SSE wrap in the path).
-const compactJsonResponse = (overrides?: Partial<OpenAIResponsesResult>): Response =>
-  new Response(JSON.stringify({
+const compactSseResponse = (overrides?: Partial<OpenAIResponsesResult>): Response => {
+  const response = {
     id: 'resp_x',
-    object: 'response.compaction',
+    object: 'response',
     model: 'gpt-5.4',
     status: 'completed',
     output: [{ id: 'cmp_x', type: 'compaction', encrypted_content: 'FULL_BLOB' }],
+    error: null,
+    incomplete_details: null,
     usage: { input_tokens: 550, output_tokens: 167, total_tokens: 717 },
     ...overrides,
-  }), {
+  };
+  return new Response(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n`, {
     status: 200,
     headers: new Headers({
-      'content-type': 'application/json',
+      'content-type': 'text/event-stream',
       'x-codex-primary-used-percent': '42',
       'x-codex-primary-window-minutes': '300',
       'x-codex-primary-reset-after-seconds': '18000',
     }),
   });
+};
 
 describe('callCodexOpenAIResponsesCompact', () => {
-  test('posts to /codex/responses/compact with application/json and no stream/store', async () => {
+  test('posts a compaction trigger to /codex/responses and collects the SSE result', async () => {
     seedFreshAccessToken();
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactSseResponse());
     const result = await callCodexOpenAIResponsesCompact({
       upstreamId, account: activeAccount, isFedRampAccount: true, model,
       body: { input: [{ type: 'message', role: 'user', content: 'hello' }] },
@@ -1249,28 +1291,30 @@ describe('callCodexOpenAIResponsesCompact', () => {
     if (!result.ok) return;
 
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
+    expect(url).toBe('https://chatgpt.com/backend-api/codex/responses');
     const headers = new Headers(init.headers);
-    expect(headers.get('accept')).toBe('application/json');
+    expect(headers.get('accept')).toBe('text/event-stream');
     expect(headers.get('authorization')).toBe('Bearer at_kv');
     expect(headers.get('x-openai-fedramp')).toBe('true');
-    expect(headers.get('x-codex-installation-id')).toBe(activeAccount.openaiDeviceId);
-    expect(headers.get('x-client-request-id')).toBeNull();
+    expect(headers.get('x-client-request-id')).not.toBeNull();
 
     const body = await readJsonRequest(init) as Record<string, unknown>;
     expect(body.model).toBe('gpt-5.4');
-    expect(body.input).toEqual([{ type: 'message', role: 'user', content: 'hello' }]);
-    expect(body.parallel_tool_calls).toBe(false);
-    expect(body.stream).toBeUndefined();
-    expect(body.store).toBeUndefined();
+    expect(body.input).toEqual([
+      { type: 'message', role: 'user', content: 'hello' },
+      { type: 'compaction_trigger' },
+    ]);
+    expect(body.parallel_tool_calls).toBe(true);
+    expect(body.stream).toBe(true);
+    expect(body.store).toBe(false);
 
-    expect(result.result.object).toBe('response.compaction');
+    expect(result.result.object).toBe('response');
     expect(result.result.output[0]).toMatchObject({ id: 'cmp_x', type: 'compaction', encrypted_content: 'FULL_BLOB' });
   });
 
   test('projects the Codex compact payload instead of the public OpenAI compact shape', async () => {
     seedFreshAccessToken();
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactSseResponse());
     await callCodexOpenAIResponsesCompact({
       upstreamId,
       account: activeAccount,
@@ -1298,9 +1342,12 @@ describe('callCodexOpenAIResponsesCompact', () => {
     });
 
     const body = await readJsonRequest(fetchSpy.mock.calls[0][1] as RequestInit);
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       model: 'gpt-5.4',
-      input: [{ type: 'message', role: 'user', content: 'hello' }],
+      input: [
+        { type: 'message', role: 'user', content: 'hello' },
+        { type: 'compaction_trigger' },
+      ],
       instructions: 'Base instructions.',
       tools: [{ type: 'function', name: 'exec', parameters: { type: 'object' } }],
       parallel_tool_calls: true,
@@ -1308,13 +1355,18 @@ describe('callCodexOpenAIResponsesCompact', () => {
       service_tier: 'priority',
       prompt_cache_key: 'session-key',
       text: { verbosity: 'low' },
+      previous_response_id: 'resp_previous',
+      prompt_cache_options: { mode: 'explicit', ttl: '30m' },
+      prompt_cache_retention: '24h',
+      stream: true,
+      store: false,
       access_programs: { cyber: 'daybreak_blue' },
     });
   });
 
   test('uses the Responses Lite transport contract for compaction', async () => {
     seedFreshAccessToken();
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactSseResponse());
     await callCodexOpenAIResponsesCompact({
       upstreamId,
       account: activeAccount,
@@ -1338,11 +1390,12 @@ describe('callCodexOpenAIResponsesCompact', () => {
     expect(body.reasoning).toEqual({ context: 'all_turns' });
     expect(input[0]).toMatchObject({ type: 'additional_tools', role: 'developer', tools: [] });
     expect(input[1]).toMatchObject({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Base instructions.' }] });
+    expect(input.at(-1)).toEqual({ type: 'compaction_trigger' });
   });
 
   test('2xx persists quota snapshot via opts.call.waitUntil', async () => {
     seedFreshAccessToken();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactJsonResponse());
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(compactSseResponse());
     const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
     await callCodexOpenAIResponsesCompact({
       upstreamId, account: activeAccount, model,
@@ -1358,7 +1411,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'at2', refresh_token: 'rt_v2', id_token: idToken() }), { status: 200 }))
-      .mockResolvedValueOnce(compactJsonResponse());
+      .mockResolvedValueOnce(compactSseResponse());
     const effects = makeEffects();
     const result = await callCodexOpenAIResponsesCompact({
       upstreamId, account: activeAccount, model,
@@ -1367,7 +1420,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
     expect(result.ok).toBe(true);
     expect(effects.persistRefreshTokenRotation).toHaveBeenCalledWith('rt_v2', 'rt_v1');
     // Both compact requests hit the same URL; the bearer flipped from at_kv to at2.
-    expect(fetchSpy.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/codex/responses/compact');
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://chatgpt.com/backend-api/codex/responses');
     const firstInit = fetchSpy.mock.calls[0][1] as RequestInit;
     const reloadInit = fetchSpy.mock.calls[1][1] as RequestInit;
     const retryInit = fetchSpy.mock.calls[3][1] as RequestInit;
@@ -1376,8 +1429,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
     const retryHeaders = new Headers(retryInit.headers);
     expect(reloadHeaders.get('authorization')).toBe('Bearer at_kv');
     expect(retryHeaders.get('authorization')).toBe('Bearer at2');
-    expect(retryHeaders.get('x-codex-installation-id')).toBe(firstHeaders.get('x-codex-installation-id'));
-    expect(retryHeaders.get('x-client-request-id')).toBeNull();
+    expect(retryHeaders.get('x-client-request-id')).toBe(firstHeaders.get('x-client-request-id'));
     expect(retryHeaders.get('x-codex-turn-metadata')).toBe(firstHeaders.get('x-codex-turn-metadata'));
     expect(await readJsonRequest(retryInit)).toEqual(await readJsonRequest(firstInit));
   });
@@ -1389,7 +1441,7 @@ describe('callCodexOpenAIResponsesCompact', () => {
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'expired' } }))
       .mockResolvedValueOnce(errorJson(401, { error: { code: 'expired_token', message: 'still expired' } }))
       .mockResolvedValueOnce(errorJson(200, { access_token: 'at2', refresh_token: 'rt2', id_token: idTokenWithoutPlan() }))
-      .mockResolvedValueOnce(compactJsonResponse());
+      .mockResolvedValueOnce(compactSseResponse());
     const result = await callCodexOpenAIResponsesCompact({
       upstreamId,
       account: activeAccount,
