@@ -140,7 +140,7 @@ describe('playground wire requests', () => {
       role: 'assistant',
       content: [{ type: 'output_text', text: 'ok', annotations: [] }],
     };
-    const body = await roundTrip('responses', [
+    const body = await roundTrip('openaiResponses', [
       { type: 'response.output_text.delta', sequence_number: 0, item_id: 'msg_1', output_index: 1, content_index: 0, delta: 'ok' },
       {
         type: 'response.completed',
@@ -162,7 +162,7 @@ describe('playground wire requests', () => {
 
   it('replays Chat Completions reasoning fields without rendering them as text', async () => {
     const reasoningItems = [{ type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_text', text: 'summary' }] }];
-    const body = await roundTrip('chatCompletions', [
+    const body = await roundTrip('openaiChatCompletions', [
       {
         id: 'chat_1', object: 'chat.completion.chunk', created: 1, model: 'test-model',
         choices: [{
@@ -192,7 +192,7 @@ describe('playground wire requests', () => {
   });
 
   it('replays Messages thinking and signature blocks without rendering them as text', async () => {
-    const body = await roundTrip('messages', [
+    const body = await roundTrip('anthropicMessages', [
       {
         type: 'message_start',
         message: {
@@ -238,7 +238,7 @@ describe('playground wire requests', () => {
     });
 
     await collectWithOutput(streamPlaygroundText({
-      api: 'chatCompletions',
+      api: 'openaiChatCompletions',
       apiKey: 'secret',
       model: 'test-model',
       system: '',
@@ -246,11 +246,11 @@ describe('playground wire requests', () => {
         id: 'assistant-1',
         role: 'assistant',
         text: 'visible answer',
-        assistantOutput: { api: 'responses', items: [{ type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'secret' }] },
+        assistantOutput: { api: 'openaiResponses', items: [{ type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'secret' }] },
       }],
       options: {},
       signal: new AbortController().signal,
-      fetchImpl: createWireFetch({}, 'chatCompletions'),
+      fetchImpl: createWireFetch({}, 'openaiChatCompletions'),
     }));
 
     expect(calls[0]!.messages).toEqual([{ role: 'assistant', content: 'visible answer' }]);

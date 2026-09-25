@@ -8,9 +8,9 @@ import type { OpenAIResponsesOutputItem } from '@floway-dev/protocols/openai-res
 export type PlaygroundApi = 'openaiResponses' | 'openaiChatCompletions' | 'anthropicMessages';
 
 export type PlaygroundAssistantOutput =
-  | { api: 'responses'; items: OpenAIResponsesOutputItem[] }
-  | { api: 'chatCompletions'; message: OpenAIChatCompletionsResult['choices'][number]['message'] }
-  | { api: 'messages'; content: AnthropicMessagesResult['content'] };
+  | { api: 'openaiResponses'; items: OpenAIResponsesOutputItem[] }
+  | { api: 'openaiChatCompletions'; message: OpenAIChatCompletionsResult['choices'][number]['message'] }
+  | { api: 'anthropicMessages'; content: AnthropicMessagesResult['content'] };
 
 export interface PlaygroundMessage {
   id: string;

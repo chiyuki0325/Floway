@@ -46,8 +46,8 @@ const turnsFor = (messages: readonly PlaygroundMessage[], api: PlaygroundApi): u
   messages.flatMap<unknown>(message => {
     const output = message.role === 'assistant' ? message.assistantOutput : undefined;
     if (output?.api === api) {
-      if (output.api === 'responses') return output.items;
-      if (output.api === 'chatCompletions') return [output.message];
+      if (output.api === 'openaiResponses') return output.items;
+      if (output.api === 'openaiChatCompletions') return [output.message];
       return [{ role: 'assistant', content: output.content }];
     }
     return [{ role: message.role, content: contentFor(message, api) }];
@@ -79,15 +79,15 @@ const assistantOutputFrom = async (
 ): Promise<PlaygroundAssistantOutput | null> => {
   if (api === 'openaiResponses') {
     const result = await reassembleOpenAIResponsesEvents(eventsFrom(events as OpenAIResponsesStreamEvent[]));
-    return { api: 'responses', items: result.output };
+    return { api: 'openaiResponses', items: result.output };
   }
   if (api === 'openaiChatCompletions') {
     const result = await reassembleOpenAIChatCompletionsEvents(eventsFrom(events as OpenAIChatCompletionsStreamEvent[]));
     const message = result.choices[0]?.message;
-    return message ? { api: 'chatCompletions', message } : null;
+    return message ? { api: 'openaiChatCompletions', message } : null;
   }
   const result = await reassembleAnthropicMessagesEvents(eventsFrom(events as AnthropicMessagesStreamEvent[]));
-  return { api: 'messages', content: result.content };
+  return { api: 'anthropicMessages', content: result.content };
 };
 
 const textDelta = (api: PlaygroundApi, event: unknown): string => {
