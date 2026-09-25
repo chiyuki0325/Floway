@@ -164,7 +164,7 @@ test('interceptor applies across target APIs when its flag is on', async () => {
     testTelemetryModelIdentity,
   ));
 
-  for (const targetApi of ['responses', 'messages', 'chat-completions'] as const) {
+  for (const targetApi of ['openaiResponses', 'anthropicMessages', 'openaiChatCompletions'] as const) {
     const invocation: OpenAIResponsesInvocation = {
       payload: { model: 'gpt-test', input: [], tools: [traexImageTool()] },
       candidate: stubModelCandidate({ enabledFlags: new Set<FlagId>(['strip-traex-image-generation-tool']) }),
@@ -184,7 +184,7 @@ test('interceptor preserves the request when its flag is off', async () => {
   const invocation: OpenAIResponsesInvocation = {
     payload: { model: 'gpt-test', input: [], tools: [traexImageTool()] },
     candidate: stubModelCandidate({ enabledFlags: new Set() }),
-    targetApi: 'responses',
+    targetApi: 'openaiResponses',
     headers: new Headers(),
     action: 'generate',
   };
