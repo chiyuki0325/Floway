@@ -21,9 +21,8 @@ const INBOUND_HEADER_ALLOWLIST = [
   'session_id',
   'thread-id',
   'x-client-request-id',
-  'x-codex-image-turn-id',
-  'x-codex-turn-metadata',
-  'x-codex-window-id',
+  // Preserve future Codex extension headers without admitting arbitrary client headers.
+  /^x-codex-/,
 ] as const;
 
 export const createCodexProvider = (record: UpstreamRecord): Provider => {

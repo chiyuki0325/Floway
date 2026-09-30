@@ -170,7 +170,7 @@ describe('/alpha/search data plane', () => {
         config: {
           baseUrl: 'https://search.example.com',
           authStyle: 'bearer',
-          ingressHeadersRules: [],
+          ingressHeadersRules: [{ key: 'x-codex-future-feature', value: null }],
           apiKey: 'search-secret',
           endpoints: { openaiResponses: {} },
           modelsFetch: { enabled: false },
@@ -184,25 +184,37 @@ describe('/alpha/search data plane', () => {
       };
       const immutableUpstreamResponse = await fetch(`data:application/json,${encodeURIComponent(JSON.stringify(upstreamPayload))}`);
       let upstreamBody: Record<string, unknown> | undefined;
+      let upstreamHeaders: Headers | undefined;
       await withMockedFetch(
         async request => {
           if (request.url === 'https://search.example.com/v1/alpha/search') {
             upstreamBody = await request.json() as Record<string, unknown>;
+            upstreamHeaders = request.headers;
             return immutableUpstreamResponse;
           }
           throw new Error(`Unhandled fetch ${request.url}`);
         },
         async () => {
           await warmModelsForTest();
-          const response = await postSearch(buildAlphaSearchApp(), apiKey.key, {
-            id: 'session-search',
-            model: 'caller-model',
-            commands: { search_query: [{ q: 'Floway' }] },
+          const response = await buildAlphaSearchApp().request(SEARCH_PATH, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${apiKey.key}`,
+              'content-type': 'application/json',
+              'x-codex-future-feature': 'retained',
+            },
+            body: JSON.stringify({
+              id: 'session-search',
+              model: 'caller-model',
+              commands: { search_query: [{ q: 'Floway' }] },
+            }),
           });
           expect(response.status).toBe(200);
           expect(await response.json()).toEqual(upstreamPayload);
         },
       );
+      expect(upstreamHeaders?.get('x-codex-future-feature')).toBe('retained');
+      expect(upstreamHeaders?.get('authorization')).toBe('Bearer search-secret');
       expect(upstreamBody).toMatchObject({
         id: 'session-search',
         model: 'gpt-search',

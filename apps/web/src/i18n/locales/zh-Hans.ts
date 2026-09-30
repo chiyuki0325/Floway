@@ -863,7 +863,7 @@ const zhHansCN = {
             previewFirst: '请先预览当前 JSON 再导入。',
             noValidAccounts: '未找到可导入的 OpenAI OAuth 账号。',
             selectAccount: '请选择一个可导入的账号。',
-            oauthHint: '在已登录 ChatGPT 的浏览器中打开授权页，完成授权后粘贴 localhost 回调 URL。',
+            oauthHint: '在已登录 ChatGPT 的浏览器中打开授权页，完成授权后粘贴 127.0.0.1 回调 URL。',
             manualHint: '仅访问令牌为必填。填写的值优先于对应的令牌声明；留空的字段先取 ID 令牌中的声明，访问令牌为 JWT 时再取其声明。',
             accessToken: '访问令牌',
             refreshToken: '刷新令牌',

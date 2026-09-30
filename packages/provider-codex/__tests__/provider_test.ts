@@ -65,7 +65,7 @@ const sseResponse = (): Response => new Response(
 
 const modelsResponse = (): Response => new Response(JSON.stringify({
   models: [
-    { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', context_window: 272000, max_context_window: 1000000, use_responses_lite: false },
+    { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list', context_window: 272000, max_context_window: 872000, use_responses_lite: true },
     { slug: 'codex-auto-review', display_name: 'Codex Auto Review', visibility: 'hide', context_window: 272000, max_context_window: 1000000, use_responses_lite: true },
   ],
 }), { status: 200, headers: new Headers({ 'content-type': 'application/json' }) });
@@ -100,9 +100,7 @@ describe('createCodexProvider', () => {
       'session_id',
       'thread-id',
       'x-client-request-id',
-      'x-codex-image-turn-id',
-      'x-codex-turn-metadata',
-      'x-codex-window-id',
+      /^x-codex-/,
     ]);
   });
 
@@ -119,9 +117,9 @@ describe('createCodexProvider', () => {
     const models = await instance.instance.getProvidedModels(directFetcher);
     // Provider surfaces both visible and hidden upstream models — operators
     // can dispatch to `codex-auto-review` even though ChatGPT's UI hides it.
-    expect(models.map(m => m.id)).toEqual(['gpt-5.4', 'codex-auto-review', 'gpt-image-2']);
+    expect(models.map(m => m.id)).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-image-2']);
     expect(models[0].endpoints).toEqual({ openaiResponses: {} });
-    expect(models[0].providerData).toEqual({ useResponsesLite: false });
+    expect(models[0].providerData).toEqual({ useResponsesLite: true });
     expect(models[1].providerData).toEqual({ useResponsesLite: true });
     expect(models[2]).toMatchObject({ kind: 'image', endpoints: { openaiImagesGenerations: {}, openaiImagesEdits: {} } });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -134,7 +132,7 @@ describe('createCodexProvider', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(modelsResponse());
     const models = await createCodexProvider(record).instance.getProvidedModels(directFetcher);
     // Unknown plan fails open, so the provider-owned image model is surfaced too.
-    expect(models.map(m => m.id)).toEqual(['gpt-5.4', 'codex-auto-review', 'gpt-image-2']);
+    expect(models.map(m => m.id)).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-image-2']);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers).get('authorization')).toBe('Bearer at_only');
   });
@@ -157,7 +155,7 @@ describe('createCodexProvider', () => {
     });
     const instance = createCodexProvider(baseRecord);
     const models = await instance.instance.getProvidedModels(directFetcher);
-    expect(models.map(m => m.id)).toEqual(['gpt-5.4', 'codex-auto-review', 'gpt-image-2']);
+    expect(models.map(m => m.id)).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-image-2']);
     const urls = fetchSpy.mock.calls.map(c => typeof c[0] === 'string' ? c[0] : (c[0] as URL | Request).toString());
     expect(urls.some(u => u.includes('/oauth/token'))).toBe(true);
     expect(urls.some(u => u.includes('/codex/models'))).toBe(true);
@@ -186,7 +184,7 @@ describe('createCodexProvider', () => {
       config: { accounts: [{ email: 'a@b.com', chatgptAccountId: 'acc', chatgptUserId: 'usr', planType: 'free' }] },
     };
     const models = await createCodexProvider(freeRecord).instance.getProvidedModels(directFetcher);
-    expect(models.map(model => model.id)).toEqual(['gpt-5.4', 'codex-auto-review']);
+    expect(models.map(model => model.id)).toEqual(['gpt-6.1-sol', 'codex-auto-review']);
   });
 
   test('getProvidedModels fails open for an unknown future plan', async () => {

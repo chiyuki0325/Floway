@@ -515,12 +515,21 @@ const postCodexJson = async (
   return await classifyCodexHttpResponse(opts, response, quotaPolicy);
 };
 
+// Gateway ingress admits only Codex's header namespace; the provider keeps
+// unfamiliar extension headers while retaining ownership of identity and auth.
+const copyCodexExtensionHeaders = (source: Headers, destination: Headers): void => {
+  for (const [name, value] of source) {
+    if (name.startsWith('x-codex-')) destination.set(name, value);
+  }
+};
+
 const dispatchCodexHttpCall = async (
   opts: CodexBackendCallBase,
   request: CodexHttpCallRequest,
 ): Promise<Response> => {
   const { accessToken, path, accept, body, identity, turnMetadataJson, responsesLite } = request;
   const headers = new Headers();
+  copyCodexExtensionHeaders(opts.headers, headers);
   headers.set('authorization', `Bearer ${accessToken}`);
   if (opts.account.chatgptAccountId !== null) {
     headers.set('chatgpt-account-id', opts.account.chatgptAccountId);
@@ -609,8 +618,9 @@ const dispatchCodexImageCall = async (
     version: CODEX_CLI_VERSION,
     accept: 'application/json',
     'content-type': 'application/json',
-    'x-codex-image-turn-id': turnId,
   });
+  copyCodexExtensionHeaders(opts.headers, headers);
+  headers.set('x-codex-image-turn-id', turnId);
   return await postCodexJson(opts, { path, accessToken, body, headers, quotaPolicy: 'when-present' });
 };
 

@@ -23,6 +23,7 @@ import { type CtxWithJson, zValidator } from '../../middleware/zod-validator.ts'
 import { backgroundSchedulerFromContext } from '../../runtime/background.ts';
 import { getRuntimeLocation } from '../../runtime/runtime-info.ts';
 import { mountPublicRoute } from '../public-route.ts';
+import { inboundHeaders } from '../shared/inbound-headers.ts';
 import { relayFetchedResponse } from '../tools/web-search/alpha-search/relay-response.ts';
 import { resolveAlphaSearchDispatcher } from '../tools/web-search/alpha-search/upstream.ts';
 import { loadWebSearchConfig } from '../tools/web-search/config.ts';
@@ -100,10 +101,7 @@ const alphaSearch = async (c: CtxWithJson<typeof alphaSearchRequestSchema>): Pro
       scheduler: backgroundSchedulerFromContext(c),
       runtimeLocation: getRuntimeLocation(c.req.raw),
     });
-    const headers = new Headers();
-    const turnMetadata = c.req.header('x-codex-turn-metadata');
-    if (turnMetadata !== undefined) headers.set('x-codex-turn-metadata', turnMetadata);
-    const response = await dispatcher(body, c.req.raw.signal, headers);
+    const response = await dispatcher(body, c.req.raw.signal, inboundHeaders(c));
     return relayFetchedResponse(response);
   }
 

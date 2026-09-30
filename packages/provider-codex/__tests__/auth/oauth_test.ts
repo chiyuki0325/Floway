@@ -10,7 +10,7 @@ afterEach(() => vi.restoreAllMocks());
 
 test('buildCodexAuthorizeUrl preserves the Codex CLI query surface and order', () => {
   expect(buildCodexAuthorizeUrl({ state: 'STATE', codeChallenge: 'CHALLENGE' })).toBe(
-    'https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&state=STATE&code_challenge=CHALLENGE&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&originator=codex_cli_rs',
+    'https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&state=STATE&code_challenge=CHALLENGE&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&originator=codex_cli_rs',
   );
 });
 
@@ -34,7 +34,7 @@ describe('exchangeCodexAuthorizationCode', () => {
     expect(params.get('code')).toBe('CODE');
     expect(params.get('code_verifier')).toBe('VER');
     expect(params.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
-    expect(params.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
+    expect(params.get('redirect_uri')).toBe('http://127.0.0.1:1455/auth/callback');
   });
 
   test('throws session-terminated on app_session_terminated', async () => {

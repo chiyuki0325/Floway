@@ -268,8 +268,8 @@ describe('Codex private Responses wire selection', () => {
         const wire = await readJsonRequest(init as RequestInit) as Record<string, unknown>;
         const wireHeaders = new Headers(init?.headers);
         expect(wireHeaders.get(CODEX_RESPONSES_LITE_HEADER)).toBe(useResponsesLite ? 'true' : null);
-        expect(wireHeaders.get('user-agent')).toBe('codex_cli_rs/0.156.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10');
-        expect(wireHeaders.get('version')).toBe('0.156.0');
+        expect(wireHeaders.get('user-agent')).toBe('codex_cli_rs/0.159.2 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10');
+        expect(wireHeaders.get('version')).toBe('0.159.2');
         expect(headers.get(CODEX_RESPONSES_LITE_HEADER)).toBe(marker ?? null);
         expect(body).toEqual(original);
         expect(wire.text).toEqual(body.text);
@@ -584,6 +584,7 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
         version: '1',
         'x-client-request-id': 'req-123',
         'x-codex-beta-features': 'responses_websockets=2026-02-06',
+        'x-codex-future-feature': 'retained',
         'x-codex-turn-metadata': 'turn-meta',
         'x-codex-window-id': 'downstream-window',
         'x-real-ip': '203.0.113.10',
@@ -602,11 +603,11 @@ describe('callCodexOpenAIResponses — upstream classification', () => {
     expect(headers.get('content-type')).toBe('application/json');
     expect(headers.get('session-id')).toBe('downstream-session');
     expect(headers.get('session_id')).toBeNull();
-    // Caller-supplied identity fields pass through; noise headers (cf-*,
-    // forwarded, x-real-ip, openai-beta, x-codex-beta-features) are dropped.
+    // Preserve Codex extension headers, but not unrelated client headers.
     expect(headers.get('x-client-request-id')).toBe('req-123');
     expect(headers.get('thread-id')).toBe('downstream-session');
-    expect(headers.get('x-codex-beta-features')).toBeNull();
+    expect(headers.get('x-codex-beta-features')).toBe('responses_websockets=2026-02-06');
+    expect(headers.get('x-codex-future-feature')).toBe('retained');
     expect(headers.get('x-codex-window-id')).toBe('downstream-window');
     const turnMetadataJson = headers.get('x-codex-turn-metadata');
     const turnMetadata = JSON.parse(turnMetadataJson ?? 'null') as Record<string, unknown>;
@@ -1272,7 +1273,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
       model: imageModel,
       body: { prompt: 'an orange circle' },
       fallbackPlanType: 'plus',
-      headers: new Headers({ originator: 'chatgpt_cca' }),
+      headers: new Headers({ originator: 'chatgpt_cca', 'x-codex-future-feature': 'retained' }),
       effects: makeEffects(),
       call: noopUpstreamCallOptions(),
     });
@@ -1286,6 +1287,7 @@ describe('callCodexOpenAIImagesGenerations', () => {
     for (const headers of [firstHeaders, secondHeaders]) {
       expect(headers.get('version')).toBe(CODEX_CLI_VERSION);
       expect(headers.get('user-agent')).toBe(CODEX_USER_AGENT);
+      expect(headers.get('x-codex-future-feature')).toBe('retained');
     }
     expect(firstHeaders.get('x-codex-image-turn-id')).toMatch(UUID_V7_RE);
     expect(secondHeaders.get('x-codex-image-turn-id')).toBe(firstHeaders.get('x-codex-image-turn-id'));

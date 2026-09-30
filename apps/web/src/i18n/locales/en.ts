@@ -907,7 +907,7 @@ const en = {
             previewFirst: 'Preview the current JSON before importing.',
             noValidAccounts: 'No importable OpenAI OAuth accounts were found.',
             selectAccount: 'Select one importable account.',
-            oauthHint: 'Open the authorization page in a browser signed in to ChatGPT, complete consent, then paste the localhost callback URL.',
+            oauthHint: 'Open the authorization page in a browser signed in to ChatGPT, complete consent, then paste the 127.0.0.1 callback URL.',
             manualHint: 'Only the access token is required. What you type wins over the matching token claim; what you leave blank is read from the ID token first, then from the access token when it is a JWT.',
             accessToken: 'Access token',
             refreshToken: 'Refresh token',

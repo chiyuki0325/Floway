@@ -43,10 +43,11 @@ const dispatcherFor = async (kind: 'codex' | 'custom', inboundHeaderAllowlist: r
   return { dispatcher, observedHeaders: () => observedHeaders };
 };
 
-test('Codex Alpha Search receives only its declared turn metadata', async () => {
-  const { dispatcher, observedHeaders } = await dispatcherFor('codex', ['x-codex-turn-metadata']);
+test('Codex Alpha Search retains extension headers without forwarding credentials', async () => {
+  const { dispatcher, observedHeaders } = await dispatcherFor('codex', [/^x-codex-/]);
   await dispatcher({}, undefined, new Headers({
     authorization: 'Bearer secret',
+    'x-codex-future-feature': 'retained',
     'x-codex-turn-metadata': '{"turn_id":"turn-1"}',
     'x-debug': 'discard',
   }));
@@ -54,6 +55,7 @@ test('Codex Alpha Search receives only its declared turn metadata', async () => 
   const headers = observedHeaders();
   assertExists(headers);
   assertEquals(Object.fromEntries(headers), {
+    'x-codex-future-feature': 'retained',
     'x-codex-turn-metadata': '{"turn_id":"turn-1"}',
   });
 });
