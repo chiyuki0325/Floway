@@ -1750,3 +1750,63 @@ test('OpenAI Responses WebSocket dispatches each Codex turn with the metadata bl
     }),
   );
 });
+
+test('OpenAI Responses WebSocket replays Codex Lite input items without rebuilding their prefix', async () => {
+  const { apiKey, repo } = await setupAppTest();
+  await saveUpstreamForTest(repo.upstreams, buildCodexUpstreamRecord());
+  const upstreamBodies: Record<string, unknown>[] = [];
+  const prefix = [
+    { type: 'additional_tools', role: 'developer', id: 'at_ws_lite', tools: [{ type: 'namespace', name: 'functions', description: '', tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object' } }] }] },
+    { type: 'message', role: 'developer', id: 'msg_ws_lite', content: [{ type: 'input_text', text: 'Caller base instructions' }], internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'] } },
+  ];
+
+  await withMockedFetch(
+    async request => {
+      const url = new URL(request.url);
+      if (url.hostname === 'update.code.visualstudio.com') return jsonResponse(['1.110.1']);
+      if (url.pathname === '/copilot_internal/v2/token') {
+        return jsonResponse({ token: 'copilot-access-token', expires_at: 4102444800, refresh_in: 3600, endpoints: { api: 'https://api.individual.githubcopilot.com' } });
+      }
+      if (url.pathname === '/models') return jsonResponse(copilotModels([]));
+      if (url.pathname === '/backend-api/codex/models') {
+        return jsonResponse({ models: [{ slug: 'gpt-5.4', display_name: 'gpt-5.4', visibility: 'list', context_window: 272000, max_context_window: 1000000, use_responses_lite: true }] });
+      }
+      if (url.pathname === '/backend-api/codex/responses') {
+        upstreamBodies.push(JSON.parse(await request.text()) as Record<string, unknown>);
+        const turn = upstreamBodies.length;
+        return sseOpenAIResponsesResponse({
+          id: `resp_ws_lite_${turn}`, object: 'response', model: 'gpt-5.4', status: 'completed', output_text: `answer ${turn}`,
+          output: [{ id: `msg_ws_lite_output_${turn}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: `answer ${turn}`, annotations: [] }] }],
+        });
+      }
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => await withWorkerWebSocketRuntime(async () => {
+      const socket = await connectOpenAIResponsesWebSocket(apiKey.key);
+      const send = async (input: unknown[], previousResponseId?: string): Promise<string> => {
+        const terminal = waitForMessages(socket, messages => messages.some(isTerminalResponseEvent));
+        socket.send(JSON.stringify({
+          type: 'response.create', response: {
+            model: 'gpt-5.4', input, store: false,
+            ...(previousResponseId === undefined ? {} : { previous_response_id: previousResponseId }),
+            client_metadata: { ws_request_header_x_openai_internal_codex_responses_lite: 'true' },
+          },
+        }));
+        return terminalResponseId(await terminal);
+      };
+
+      const firstId = await send([...prefix, { role: 'user', content: 'First turn' }]);
+      await send([{ role: 'user', content: 'Second turn' }], firstId);
+
+      assertEquals(upstreamBodies.length, 2);
+      const firstInput = upstreamBodies[0]?.input as unknown[];
+      const secondInput = upstreamBodies[1]?.input as unknown[];
+      assertEquals(firstInput.slice(0, prefix.length), prefix);
+      assertEquals(secondInput.slice(0, prefix.length), prefix);
+      assertEquals(firstInput.filter(item => (item as { type?: string }).type === 'additional_tools').length, 1);
+      assertEquals(secondInput.filter(item => (item as { type?: string }).type === 'additional_tools').length, 1);
+      assertEquals(upstreamBodies[0]?.instructions, undefined);
+      assertEquals(upstreamBodies[1]?.instructions, undefined);
+    }),
+  );
+});

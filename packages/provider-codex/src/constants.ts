@@ -47,6 +47,14 @@ export const CODEX_ALPHA_SEARCH_PATH = '/codex/alpha/search';
 export const CODEX_OPENAI_RESPONSES_COMPACT_PATH = '/codex/responses/compact';
 export const CODEX_MODELS_PATH = '/codex/models';
 
+// Earned ChatGPT subscription resets are a separate account surface from the
+// ordinary Codex data plane. The official Codex backend client selects these
+// WHAM paths for chatgpt.com and posts a caller-stable redemption id beside an
+// optional opaque credit id:
+// https://github.com/openai/codex/blob/ac7634b9f73ec1bf96466be7a5869f0949d20b30/codex-rs/backend-client/src/client/rate_limit_resets.rs#L112-L171
+export const CODEX_RATE_LIMIT_RESET_CREDITS_PATH = '/wham/rate-limit-reset-credits';
+export const CODEX_RATE_LIMIT_RESET_CREDITS_CONSUME_PATH = '/wham/rate-limit-reset-credits/consume';
+
 // Codex's image extension does not discover this model through /codex/models.
 // It owns the capability and sends the fixed model id to these provider-
 // relative endpoints instead.
@@ -57,14 +65,14 @@ export const CODEX_OPENAI_IMAGES_GENERATIONS_PATH = '/codex/images/generations';
 export const CODEX_OPENAI_IMAGES_EDITS_PATH = '/codex/images/edits';
 
 // codex_cli_rs version we impersonate on the data plane. Bumped against the
-// stable release at https://github.com/openai/codex/releases/tag/rust-v0.156.0 — newer entries in
-// /codex/models gate themselves behind a `minimal_client_version` (e.g.
-// gpt-6-sol and gpt-6-luna need 0.155.0+), so a stale value silently truncates the model
-// list. The same value flows into the `?client_version=` query param, the
+// stable release at https://github.com/openai/codex/releases/tag/rust-v0.159.3.
+// A stale client identity can omit models from the catalog and reject them on
+// /codex/responses, even when their `minimal_client_version` is older than the
+// pinned version. The same value flows into the `?client_version=` query param, the
 // `version` header, and the User-Agent so the upstream sees a consistent client.
 // https://github.com/openai/codex/blob/fe74a774532af67b5a4a3dec03ce9469e17f89af/codex-rs/model-provider-info/src/lib.rs#L386-L400
 // https://github.com/openai/codex/blob/49e95cc73f4eb2999b1d14f863c009168df6122b/codex-rs/models-manager/models.json
-export const CODEX_CLI_VERSION = '0.156.0';
+export const CODEX_CLI_VERSION = '0.159.3';
 
 // Official Codex HTTP/WS markers. Only private catalog metadata may select
 // the outbound HTTP marker; caller markers never select a model's wire format.

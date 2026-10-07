@@ -23,11 +23,11 @@ import {
 } from './quota.ts';
 import {
   encodeCodexResponsesLiteRequest,
-  restoreCodexResponsesCompactionResult,
-  restoreCodexResponsesFrames,
+  projectMovedCodexResponsesFields,
   type CodexResponsesBody,
   type CodexResponsesLiteRequest,
 } from './responses-lite.ts';
+import { restoreCodexResponsesOutput } from './responses-output.ts';
 import type { CodexAccessTokenEntry, CodexAccountCredential } from './state.ts';
 import { isEventStreamMediaType } from '@floway-dev/protocols/common';
 import type { OpenAIImagesGenerationsPayload } from '@floway-dev/protocols/openai-images';
@@ -91,11 +91,7 @@ export const callCodexOpenAIResponses = async (opts: CallCodexOpenAIResponsesOpt
   const prepared = prepareCodexResponsesRequest(opts, 'generate');
   const ready = await prepareCodexCall(opts);
   if (!ready.ok) return { ok: false, modelKey: opts.model.id, response: ready.response };
-  const result = await performStreamingOpenAIResponsesCall(opts, prepared, ready.accessToken, false);
-  if (!result.ok || !result.headers?.has(CODEX_RESPONSES_LITE_HEADER)) return result;
-  const headers = new Headers(result.headers);
-  headers.delete(CODEX_RESPONSES_LITE_HEADER);
-  return { ...result, headers };
+  return await performStreamingOpenAIResponsesCall(opts, prepared, ready.accessToken, false);
 };
 
 export const callCodexOpenAIResponsesCompact = async (opts: CallCodexOpenAIResponsesCompactOptions): Promise<ProviderCompactionResult> => {
@@ -394,7 +390,8 @@ const buildCodexClientMetadata = (identity: CodexRequestIdentity, turnMetadataJs
 interface PreparedCodexResponsesRequest {
   identity: CodexRequestIdentity;
   turnMetadataJson: CodexTurnMetadataJson;
-  lite?: CodexResponsesLiteRequest;
+  responsesLite: boolean;
+  movedFields: CodexResponsesLiteRequest['movedFields'];
   body: ReplayableBody;
 }
 
@@ -413,14 +410,14 @@ const prepareCodexResponsesRequest = (
       : { requestKind: 'turn' };
   const turnMetadataJson = buildCodexTurnMetadataJson(identity, metadata, clientTurnMetadata);
   const standard = { ...opts.body, client_metadata: clientMetadata };
-  const lite = codexModelUsesResponsesLite(opts.model)
-    ? encodeCodexResponsesLiteRequest(standard, identity.threadId)
-    : undefined;
-  const wire = lite?.body ?? standard;
+  const responsesLite = codexModelUsesResponsesLite(opts.model);
+  const encoded = responsesLite ? encodeCodexResponsesLiteRequest(standard, identity.threadId) : undefined;
+  const wire = encoded?.body ?? standard;
   return {
     identity,
     turnMetadataJson,
-    lite,
+    responsesLite,
+    movedFields: encoded?.movedFields ?? {},
     body: jsonRequestBody(action === 'compact'
       ? buildCodexOpenAIResponsesCompactBody(wire, opts.model.id)
       : buildCodexOpenAIResponsesBody(wire, opts.model.id, identity, turnMetadataJson.body)),
@@ -452,8 +449,8 @@ const buildCodexOpenAIResponsesBody = (
 };
 
 // Codex's private compact endpoint accepts these create-only fields in addition
-// to the public compact payload. Encode before projecting so relocated tool
-// and instruction carriers reach the wire.
+// to the public compact payload. Encode before projecting so tool and
+// instruction carriers reach the wire.
 // https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/core/src/client.rs#L651-L678
 const CODEX_COMPACT_EXTENSION_FIELDS = ['tools', 'parallel_tool_calls', 'reasoning', 'text'] as const;
 
@@ -707,17 +704,17 @@ const performStreamingOpenAIResponsesCall = async (
     body: prepared.body,
     identity: prepared.identity,
     turnMetadataJson: prepared.turnMetadataJson.header,
-    responsesLite: prepared.lite !== undefined,
+    responsesLite: prepared.responsesLite,
   }).then(ensureSseContentType);
 
-  const lite = prepared.lite;
   const result = await streamingProviderCall(
     upstreamFetch,
-    lite === undefined
-      ? parseOpenAIResponsesStream
-      : (stream, parserOpts) => restoreCodexResponsesFrames(
-          parseOpenAIResponsesStream(stream, parserOpts), lite.callableIdentities, lite.requestEchoes,
-        ),
+    (stream, parserOpts) => {
+      const frames = parseOpenAIResponsesStream(stream, parserOpts);
+      return restoreCodexResponsesOutput(Object.keys(prepared.movedFields).length === 0
+        ? frames
+        : projectMovedCodexResponsesFields(frames, prepared.movedFields));
+    },
     opts.model.id,
     opts.signal,
   );
@@ -750,7 +747,7 @@ const performUnaryCompactCall = async (
     body: prepared.body,
     identity: prepared.identity,
     turnMetadataJson: prepared.turnMetadataJson.header,
-    responsesLite: prepared.lite !== undefined,
+    responsesLite: prepared.responsesLite,
   });
 
   const attempt = await retryCodexAccess401(
@@ -771,9 +768,7 @@ const performUnaryCompactCall = async (
   return {
     ok: true,
     modelKey: opts.model.id,
-    result: prepared.lite === undefined
-      ? result
-      : restoreCodexResponsesCompactionResult(result, prepared.lite.callableIdentities, prepared.lite.generatedPrefix),
+    result,
   };
 };
 

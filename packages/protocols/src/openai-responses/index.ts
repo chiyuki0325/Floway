@@ -130,6 +130,9 @@ export interface OpenAIResponsesInputMessage {
   role: 'user' | 'assistant' | 'system' | 'developer';
   content: string | OpenAIResponsesInputContent[];
   phase?: OpenAIResponsesMessagePhase;
+  // Codex marks base-instruction fragments on ordinary developer messages.
+  // https://github.com/openai/codex/blob/0462dcc062b822bb8fff16cc31ce6eeab69823b9/codex-rs/core/tests/suite/responses_lite.rs#L136-L155
+  internal_chat_message_metadata_passthrough?: Record<string, unknown>;
 }
 
 // The OpenAI Responses request schema's EasyInputMessage makes the constant
@@ -142,6 +145,7 @@ export interface OpenAIResponsesEasyInputMessage {
   role: 'user' | 'assistant' | 'system' | 'developer';
   phase?: OpenAIResponsesMessagePhase;
   type?: 'message';
+  internal_chat_message_metadata_passthrough?: Record<string, unknown>;
 }
 
 export type OpenAIResponsesRequestInputItem =
@@ -832,6 +836,19 @@ export type OpenAIResponsesTool =
   | OpenAIResponsesShellTool
   | OpenAIResponsesApplyPatchTool;
 
+export const collectOpenAIResponsesToolEntries = (
+  payload: CanonicalOpenAIResponsesPayload,
+): Array<{ tool: OpenAIResponsesTool; path: string }> => [
+  ...(payload.tools ?? []).map((tool, index) => ({ tool, path: `tools[${index}]` })),
+  ...payload.input.flatMap((item, inputIndex) =>
+    item.type === 'additional_tools' || item.type === 'tool_search_output'
+      ? item.tools.map((tool, toolIndex) => ({ tool, path: `input[${inputIndex}].tools[${toolIndex}]` }))
+      : []),
+];
+
+export const collectOpenAIResponsesTools = (payload: CanonicalOpenAIResponsesPayload): OpenAIResponsesTool[] =>
+  collectOpenAIResponsesToolEntries(payload).map(entry => entry.tool);
+
 export const mapOpenAIResponsesTools = (
   payload: CanonicalOpenAIResponsesPayload,
   transform: (tool: OpenAIResponsesTool) => OpenAIResponsesTool,
@@ -1380,8 +1397,9 @@ type OpenAIResponsesStreamEventVariant =
     output_index: number;
     diff: string;
   }
-  // Codex remote-compaction progress event.
-  // https://github.com/openai/codex/blob/0a2eb4696c/codex-rs/codex-api/src/sse/responses.rs
+  // Native compaction progress carries no summary; the final encrypted item
+  // arrives in output_item.done.
+  // https://github.com/openai/openai-node/blob/02f4ef94e8b3b02b43af6516c71a74c3c7a80b5d/src/resources/responses/responses.ts#L2311-L2335
   | {
     type: 'response.compaction.compacting';
     item_id: string;

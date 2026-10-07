@@ -26,6 +26,7 @@ import { eventResult, providerModelOf } from '@floway-dev/provider';
 // upstream has no latency to report. The usage row still lands, at zero, so the
 // request stays visible in the dashboard.
 export const answerWebSocketWarmup: OpenAIResponsesInterceptor = async (ctx, _gatewayCtx, run) => {
+  // TODO: In the pipeline architecture, answer generate:false locally only for WebSocket requests.
   if (ctx.payload.generate !== false) return await run();
   const result: OpenAIResponsesResult = {
     // Replaced by the client-output boundary's own response id.

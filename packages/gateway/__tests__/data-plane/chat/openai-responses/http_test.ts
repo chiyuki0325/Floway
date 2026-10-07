@@ -170,6 +170,43 @@ const queueCompletedResponse = (id = 'resp_test') => {
   return callOpenAIResponses;
 };
 
+test('Responses Lite input items keep their position and metadata across HTTP continuation', async () => {
+  installRepo();
+  const input = [
+    { type: 'additional_tools', role: 'developer', id: 'at_lite', tools: [{ type: 'namespace', name: 'functions', description: '', tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object' } }] }] },
+    { type: 'message', role: 'developer', id: 'msg_base', content: [{ type: 'input_text', text: 'Caller base instructions' }], internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'] } },
+    { type: 'message', role: 'user', content: 'First turn' },
+  ];
+  const bodies: Array<Omit<CanonicalOpenAIResponsesPayload, 'model'>> = [];
+  const candidate = makeCandidate({
+    endpoints: { openaiResponses: {} },
+    callOpenAIResponses: async (_model, body) => {
+      bodies.push(body as Omit<CanonicalOpenAIResponsesPayload, 'model'>);
+      return { action: 'generate', ok: true, events: makeProviderEvents(completedEvents(`resp_lite_${bodies.length}`)), modelKey: 'test-model-key' };
+    },
+  });
+  const send = async (body: Record<string, unknown>): Promise<OpenAIResponsesResult> => {
+    queueResolution([candidate]);
+    const response = await makeApp().request('/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openai-internal-codex-responses-lite': 'true' },
+      body: JSON.stringify({ model: 'test-model', store: true, ...body }),
+    });
+    assertEquals(response.status, 200);
+    return await response.json() as OpenAIResponsesResult;
+  };
+
+  const first = await send({ input });
+  await send({ previous_response_id: first.id, input: [{ role: 'user', content: 'Second turn' }] });
+
+  assertEquals(bodies[0]?.input, input);
+  assertEquals(bodies[0]?.tools, undefined);
+  assertEquals(bodies[0]?.instructions, undefined);
+  assertEquals(bodies[1]?.input.slice(0, input.length), input);
+  assertEquals(bodies[1]?.tools, undefined);
+  assertEquals(bodies[1]?.instructions, undefined);
+});
+
 test('POST /v1/responses streams a successful SSE body', async () => {
   installRepo();
   const callOpenAIResponses = queueCompletedResponse();

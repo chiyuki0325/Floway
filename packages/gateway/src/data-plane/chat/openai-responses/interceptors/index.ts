@@ -1,3 +1,4 @@
+import { withOpenAIResponsesAgentMessageShim } from './agent-message-shim.ts';
 import { answerWebSocketWarmup } from './answer-websocket-warmup.ts';
 import { withRoleCompatibilityApplied } from './apply-role-compatibility.ts';
 import { withOpenAIResponsesCollaborationShim } from './collaboration-shim.ts';
@@ -23,9 +24,14 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 // after pairwise translation has finished.
 //
 // Order matters: earlier entries wrap later ones.
-//   - answerWebSocketWarmup: runs outermost so a `generate: false` prewarm is
+//   - answerWebSocketWarmup: runs outermost so a WebSocket `generate: false` prewarm is
 //     answered before any shim or upstream call can turn it into a generation.
-//   - withOpenAIResponsesCompactShim: runs outermost so the action pivot
+//   - withOpenAIResponsesAgentMessageShim: lowers `agent_message` input items
+//     to framed user messages when the target is not OpenAI Responses (the
+//     translators do not know the item) or `openai-responses-agent-message-shim`
+//     is enabled. Runs before every other entry so none of them, nor the
+//     translation performed by the terminal dispatch, sees the item.
+//   - withOpenAIResponsesCompactShim: wraps the remaining shims so the action pivot
 //     ('compact' → 'generate' for the inner summarization turn) is visible
 //     to every downstream interceptor + the provider terminal. Also
 //     responsible for inbound expansion of prior shim-encoded compaction
@@ -62,6 +68,7 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 //     body.
 export const openaiResponsesInterceptors: readonly OpenAIResponsesInterceptor[] = [
   answerWebSocketWarmup,
+  withOpenAIResponsesAgentMessageShim,
   withOpenAIResponsesCompactShim,
   withTraexImageGenerationStripped,
   withOpenAIResponsesCollaborationShim,
