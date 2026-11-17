@@ -13,18 +13,16 @@ import { pickDistinctHue } from '../lib/hue';
 
 export const handle = dashboardWorkspaceHandle;
 
-// API-key credentials are carried over with the editor's usual
-// "leave blank to keep" contract; OAuth credentials are deliberately
-// reset to the provider's blueprint shape, because those tokens are
-// minted by the OAuth exchange and may not be valid as a second grant.
-const copyableRecord = (source: UpstreamRecord, name: string, hue: number): {
-  record: UpstreamRecord;
-  preserveCredentials: boolean;
-} => {
+// API-key credentials copy with the rest of the config and stay editable on
+// the copy; OAuth credentials are deliberately reset to the provider's
+// blueprint shape, because those tokens are minted by the OAuth exchange and
+// may not be valid as a second grant.
+const copyableRecord = (source: UpstreamRecord, name: string, hue: number): UpstreamRecord => {
   const base = {
     id: '',
     name,
     enabled: true,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '',
     updated_at: '',
@@ -34,75 +32,61 @@ const copyableRecord = (source: UpstreamRecord, name: string, hue: number): {
     proxy_fallback_list: structuredClone(source.proxy_fallback_list),
     model_prefix: source.model_prefix === null ? null : structuredClone(source.model_prefix),
     hue,
+    max_concurrent_requests: source.max_concurrent_requests,
     modelsCache: { fetchedAt: null, lastError: null, modelCount: null },
   };
 
   switch (source.kind) {
   case 'custom':
-    return {
-      record: { ...base, kind: 'custom', config: structuredClone(source.config), state: null },
-      preserveCredentials: source.config.authStyle !== 'none',
-    };
+    return { ...base, kind: 'custom', config: structuredClone(source.config), state: null };
   case 'azure':
-    return {
-      record: { ...base, kind: 'azure', config: structuredClone(source.config), state: null },
-      preserveCredentials: true,
-    };
+    return { ...base, kind: 'azure', config: structuredClone(source.config), state: null };
   case 'ollama':
-    return {
-      record: { ...base, kind: 'ollama', config: structuredClone(source.config), state: null },
-      preserveCredentials: true,
-    };
+    return { ...base, kind: 'ollama', config: structuredClone(source.config), state: null };
+  case 'kimi-code':
+    return { ...base, kind: 'kimi-code', config: structuredClone(source.config), state: null };
   case 'copilot':
     return {
-      record: {
-        ...base,
-        kind: 'copilot',
-        config: {
-          githubHost: source.config.githubHost,
-          githubToken: '',
-          user: { login: '', avatar_url: '', name: null, id: 0 },
-        },
-        state: null,
+      ...base,
+      kind: 'copilot',
+      config: {
+        githubHost: source.config.githubHost,
+        githubToken: '',
+        user: { login: '', avatar_url: '', name: null, id: 0 },
       },
-      preserveCredentials: false,
+      state: null,
     };
-  case 'codex':
-    return {
-      record: { ...base, kind: 'codex', config: { accounts: [] }, state: { accounts: [] } },
-      preserveCredentials: false,
-    };
+  case 'chatgpt':
+    return { ...base, kind: 'chatgpt', config: { accounts: [] }, state: { accounts: [] } };
   case 'claude-code':
-    return {
-      record: { ...base, kind: 'claude-code', config: { accounts: [] }, state: { accounts: [] } },
-      preserveCredentials: false,
-    };
+    return { ...base, kind: 'claude-code', config: { accounts: [] }, state: { accounts: [] } };
   }
 };
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   await requireDashboardAdmin();
-  const [sourceResult, aux] = await Promise.all([
+  const [sourceResult, aux, upstreamsResult] = await Promise.all([
     callApi(() => api.api.upstreams[':id'].$get({ param: { id: params.id } })),
     loadEditorAux(),
+    callApi(() => api.api.upstreams.$get()),
   ]);
   if (sourceResult.error?.status === 404) {
     throw redirect('/dashboard/providers/upstreams?missing=1');
   }
   if (sourceResult.error) throw new Error(sourceResult.error.message);
+  if (upstreamsResult.error) throw new Error(upstreamsResult.error.message);
   const source = sourceResult.data;
-  const { record, preserveCredentials } = copyableRecord(
+  const record = copyableRecord(
     source,
     i18n.t('dashboard.upstreams.copy.nameSuffix', { name: source.name }),
-    pickDistinctHue(aux.upstreams.map(upstream => upstream.hue)),
+    pickDistinctHue(upstreamsResult.data.map(upstream => upstream.hue)),
   );
   return {
     ...aux,
+    editLevel: 'full' as const,
     mode: 'create' as const,
     record,
-    discovered: [],
-    modelsError: null,
-    preserveCredentials,
+    discovered: null,
   };
 }
 

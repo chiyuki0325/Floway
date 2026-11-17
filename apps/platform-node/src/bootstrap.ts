@@ -2,8 +2,8 @@ import { EventTargetChannelBroker } from './event-target-channel-broker.ts';
 import { createNodeExternalResourceFetcher } from './external-resource-fetcher.ts';
 import { nodeFetch } from './fetch.ts';
 import { FsFileStore } from './fs-file-store.ts';
+import { nodeHttpContentDecoders } from './http-content-decoders.ts';
 import { createNodeSqliteDatabase } from './node-sqlite-database.ts';
-import { nodeRuntimeRootCAs } from './runtime-root-cas.ts';
 import { createSharpImageProcessor } from './sharp-image-processor.ts';
 import { nodeSocketDial } from './socket-dial.ts';
 import { SqliteImageCacheStore } from './sqlite-image-cache-store.ts';
@@ -11,7 +11,6 @@ import { timingSafeEqual } from './timing-safe-equal.ts';
 import { FileDumpStore, initDumpBroker, initDumpStore } from '@floway-dev/gateway';
 import { dumpCodec } from '@floway-dev/gateway/dump-codec';
 import type { DumpMetadata } from '@floway-dev/gateway/dump-types';
-import { addTrustedRootCAs } from '@floway-dev/http';
 import {
   getEnvOptional,
   IMAGE_CACHE_POLICY,
@@ -32,7 +31,7 @@ export const bootstrapNodePlatform = (): { db: SqlDatabase } => {
   initRuntimeKind('node');
   initTimingSafeEqual(timingSafeEqual);
   initExternalResourceFetcher(createNodeExternalResourceFetcher());
-  initFetch(nodeFetch);
+  initFetch(nodeFetch, nodeHttpContentDecoders);
 
   const filesDir = getEnvOptional('FLOWAY_FILES_DIR', './data/files');
   const dbPath = getEnvOptional('FLOWAY_DB_PATH', './data/floway.db');
@@ -40,7 +39,6 @@ export const bootstrapNodePlatform = (): { db: SqlDatabase } => {
   const files = new FsFileStore(filesDir);
   initFileStore(files);
   initSocketDial(nodeSocketDial);
-  addTrustedRootCAs(nodeRuntimeRootCAs);
   const db = createNodeSqliteDatabase(dbPath);
   initImageCacheStore(new SqliteImageCacheStore(db, IMAGE_CACHE_POLICY));
   initImageProcessor(createSharpImageProcessor());

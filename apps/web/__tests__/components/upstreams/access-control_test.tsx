@@ -1,4 +1,4 @@
-import { act, screen } from '@testing-library/react';
+import { act, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
 
@@ -11,8 +11,8 @@ const available: UpstreamOption[] = [
   { id: 'up_a', name: 'Alpha', kind: 'custom', enabled: true, hue: 210, cachedModelCount: 1 },
 ];
 
-const Control = ({ initialIds }: { initialIds: string[] }) => {
-  const [value, setValue] = useState({ override: true, ids: initialIds });
+const Control = ({ initialIds, initialOverride = true }: { initialIds: string[]; initialOverride?: boolean }) => {
+  const [value, setValue] = useState({ override: initialOverride, ids: initialIds });
   return <UpstreamAccessControl available={available} disabled={false} ids={value.ids} models={[]} onChange={setValue} override={value.override} />;
 };
 
@@ -21,6 +21,37 @@ const click = async (element: HTMLElement) => {
 };
 
 describe('upstream access selection', () => {
+  it('renders live, cached, and unknown model counts as plain text', async () => {
+    const upstreams: UpstreamOption[] = [
+      ...available,
+      { ...available[0], id: 'up_cached', name: 'Cached', enabled: false, cachedModelCount: 8 },
+      { ...available[0], id: 'up_unknown', name: 'Unknown', enabled: false, cachedModelCount: null },
+    ];
+    renderInApp(<UpstreamAccessControl available={upstreams} disabled={false} ids={['up_a']} models={[]} onChange={() => {}} override />);
+    await click(screen.getByRole('button', { name: i18n.t('dashboard.upstreamAccess.title') }));
+
+    for (const [name, count] of [['Alpha', '0 models'], ['Cached', '8 models'], ['Unknown', 'Count unavailable']]) {
+      const row = screen.getByRole('checkbox', { name: `Enabled: ${name}` }).closest('tr')!;
+      const cell = within(row).getAllByRole('cell')[2];
+      expect(cell.textContent).toBe(count);
+      expect(cell.querySelector('svg')).toBeNull();
+    }
+  });
+
+  it('only lets the upstream list expand while the limit is on', async () => {
+    renderInApp(<Control initialIds={[]} initialOverride={false} />);
+    const disclosure = screen.getByRole('button', { name: i18n.t('dashboard.upstreamAccess.title') });
+
+    expect((disclosure as HTMLButtonElement).disabled).toBe(true);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    await click(disclosure);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+
+    await click(screen.getByRole('switch', { name: i18n.t('dashboard.upstreamAccess.title') }));
+    expect((disclosure as HTMLButtonElement).disabled).toBe(false);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('warns immediately for a saved empty selection even while the list is collapsed', async () => {
     renderInApp(<Control initialIds={[]} />);
     const warning = i18n.t('dashboard.upstreamAccess.emptyWarning');
@@ -33,6 +64,28 @@ describe('upstream access selection', () => {
     await click(toggle);
     expect(screen.getByText(warning)).toBeTruthy();
     expect((screen.getByRole('checkbox', { name: 'Enabled: Alpha' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('keeps a row on its own element when the tick moves it out of the ordered head', async () => {
+    renderInApp(<Control initialIds={['up_a']} />);
+    await click(screen.getByRole('button', { name: i18n.t('dashboard.upstreamAccess.title') }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Enabled: Alpha' });
+    await click(checkbox);
+    // Rebuilding the row instead of moving it takes the focus of whoever just
+    // ticked the box, and leaves them pressing a node the document dropped.
+    expect(screen.getByRole('checkbox', { name: 'Enabled: Alpha' })).toBe(checkbox);
+    expect(checkbox.isConnected).toBe(true);
+  });
+
+  it('places the reorder grip after the checkbox in the enabled cell', async () => {
+    renderInApp(<Control initialIds={['up_a']} />);
+    await click(screen.getByRole('button', { name: i18n.t('dashboard.upstreamAccess.title') }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Enabled: Alpha' });
+    const grip = screen.getByRole('button', { name: 'Reorder upstream Alpha' });
+
+    expect(checkbox.closest('td')).toBe(grip.closest('td'));
+    expect(checkbox.compareDocumentPosition(grip) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByRole('columnheader', { name: 'Order' })).toBeNull();
   });
 
   it('allows deselecting the last upstream and preserves selections across the limit switch', async () => {
@@ -49,5 +102,16 @@ describe('upstream access selection', () => {
     await click(toggle);
     await click(toggle);
     expect((screen.getByRole('checkbox', { name: 'Enabled: Alpha' }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('keeps a saved cap visible and removable when it is no longer selectable', async () => {
+    const { rerender } = renderInApp(<Control initialIds={['up_gone']} />);
+    await click(screen.getByRole('button', { name: i18n.t('dashboard.upstreamAccess.title') }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Enabled: up_gone' }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    await click(checkbox);
+    expect(screen.queryByRole('checkbox', { name: 'Enabled: up_gone' })).toBeNull();
+    expect(screen.getByText(i18n.t('dashboard.upstreamAccess.emptyWarning'))).toBeTruthy();
+    rerender(<Control initialIds={['up_a']} />);
   });
 });

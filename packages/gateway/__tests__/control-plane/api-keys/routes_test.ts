@@ -2,6 +2,7 @@ import { test, vi } from 'vitest';
 
 import { initDumpBroker, initDumpStore } from '../../../src/dump/registry.ts';
 import { installDumpStubs } from '../../dump/test-fixtures.ts';
+import { saveUpstreamForTest } from '../../repo/upstreams.ts';
 import { buildCustomUpstreamRecord, requestApp, setupAppTest } from '../../test-utils/app.ts';
 import { assertEquals, assertExists } from '@floway-dev/test-utils';
 
@@ -31,9 +32,19 @@ test('POST /api/keys defaults durable OpenAI Responses persistence off', async (
     body: JSON.stringify({ name: 'default-off' }),
   });
   assertEquals(response.status, 201);
-  const body = (await response.json()) as { id: string; responses_retention_seconds: number };
+  const body = (await response.json()) as { id: string; randomize_upstreams: boolean; responses_retention_seconds: number };
+  assertEquals(body.randomize_upstreams, false);
   assertEquals(body.responses_retention_seconds, 0);
+  assertEquals((await repo.apiKeys.getById(body.id))?.randomizeUpstreams, false);
   assertEquals((await repo.apiKeys.getById(body.id))?.openaiResponsesRetentionSeconds, 0);
+});
+
+test('PATCH /api/keys/:id enables randomized upstream order', async () => {
+  const { repo, apiKey } = await setupAppTest();
+  const response = await ownerPatch(apiKey.id, { randomize_upstreams: true }, apiKey.key);
+  assertEquals(response.status, 200);
+  assertEquals(((await response.json()) as { randomize_upstreams: boolean }).randomize_upstreams, true);
+  assertEquals((await repo.apiKeys.getById(apiKey.id))?.randomizeUpstreams, true);
 });
 
 test('PATCH /api/keys/:id changes only the rolling OpenAI Responses duration', async () => {
@@ -57,8 +68,8 @@ test('PATCH /api/keys/:id rejects unsupported OpenAI Responses retention values'
 
 test('PATCH /api/keys/:id accepts a custom upstream whitelist + order', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_y', name: 'Y' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_y', name: 'Y' }));
 
   const response = await ownerPatch(apiKey.id, { upstream_ids: ['up_y', 'up_x'] }, apiKey.key);
   assertEquals(response.status, 200);
@@ -72,7 +83,7 @@ test('PATCH /api/keys/:id accepts a custom upstream whitelist + order', async ()
 
 test('PATCH /api/keys/:id resets to default with upstream_ids: null', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
   await ownerPatch(apiKey.id, { upstream_ids: ['up_x'] }, apiKey.key);
 
   const response = await ownerPatch(apiKey.id, { upstream_ids: null }, apiKey.key);
@@ -100,7 +111,7 @@ test('PATCH /api/keys/:id saves an empty upstream restriction and can disable it
 
 test('PATCH /api/keys/:id rejects unknown upstream ids with a descriptive error', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_known', name: 'Known' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_known', name: 'Known' }));
 
   const response = await ownerPatch(apiKey.id, { upstream_ids: ['up_known', 'up_ghost'] }, apiKey.key);
   assertEquals(response.status, 400);
@@ -111,36 +122,33 @@ test('PATCH /api/keys/:id rejects unknown upstream ids with a descriptive error'
   }
 });
 
-test('PATCH /api/keys/:id rejects entries outside the user-level upstream cap', async () => {
+test('PATCH /api/keys/:id stores existing upstreams even when the user ACL currently excludes one', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_a', name: 'A' }));
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_b', name: 'B' }));
-  // Tighten the user cap to up_a only; the key owner cannot expand to up_b.
-  const owner = await repo.users.getById(apiKey.userId);
-  if (!owner) throw new Error('owner missing');
-  await repo.users.save({ ...owner, upstreamIds: ['up_a'] });
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_a', name: 'A' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_b', name: 'B' }));
+  await repo.accessRecords.deleteByPrincipal({ kind: 'user', id: apiKey.userId });
+  await repo.accessRecords.save({
+    principal: { kind: 'user', id: apiKey.userId },
+    scope: { kind: 'upstream', upstreamId: 'up_a' },
+    sortOrder: 0,
+    values: { 'Model.Use': true },
+  });
 
-  const allowed = await ownerPatch(apiKey.id, { upstream_ids: ['up_a'] }, apiKey.key);
-  assertEquals(allowed.status, 200);
-
-  const blocked = await ownerPatch(apiKey.id, { upstream_ids: ['up_a', 'up_b'] }, apiKey.key);
-  assertEquals(blocked.status, 400);
-  const body = (await blocked.json()) as { error?: string };
-  if (!String(body.error).includes('up_b')) {
-    throw new Error(`expected error to mention up_b; got ${body.error}`);
-  }
+  const response = await ownerPatch(apiKey.id, { upstream_ids: ['up_a', 'up_b'] }, apiKey.key);
+  assertEquals(response.status, 200);
+  assertEquals((await repo.apiKeys.getById(apiKey.id))?.upstreamIds, ['up_a', 'up_b']);
 });
 
 test('PATCH /api/keys/:id rejects duplicate ids inside the whitelist', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
   const response = await ownerPatch(apiKey.id, { upstream_ids: ['up_x', 'up_x'] }, apiKey.key);
   assertEquals(response.status, 400);
 });
 
 test('PATCH /api/keys/:id leaves name unchanged when only upstream_ids is sent', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
   await ownerPatch(apiKey.id, { upstream_ids: ['up_x'] }, apiKey.key);
 
   const stored = await repo.apiKeys.getById(apiKey.id);
@@ -150,7 +158,7 @@ test('PATCH /api/keys/:id leaves name unchanged when only upstream_ids is sent',
 
 test('PATCH /api/keys/:id keeps a stored deleted-upstream id but hides it from the response', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
   // Stale id surviving from a prior write; only touched by writes that target upstream_ids.
   await repo.apiKeys.save({ ...apiKey, upstreamIds: ['up_x', 'up_gone'] });
 
@@ -165,7 +173,7 @@ test('PATCH /api/keys/:id keeps a stored deleted-upstream id but hides it from t
 
 test('GET /api/keys drops deleted-upstream ids so the editor cannot re-submit them', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
   await repo.apiKeys.save({ ...apiKey, upstreamIds: ['up_gone', 'up_x'] });
 
   const response = await requestApp('/api/keys', { headers: { 'x-api-key': apiKey.key } });
@@ -196,7 +204,7 @@ test('PATCH /api/keys/:id is owner-only — admins are not privileged on other u
 
 test('POST /api/keys creates a key under the actor with optional upstream_ids', async () => {
   const { repo, apiKey } = await setupAppTest();
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_x', name: 'X' }));
 
   const response = await requestApp('/api/keys', {
     method: 'POST',

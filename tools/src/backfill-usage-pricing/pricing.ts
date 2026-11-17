@@ -2,9 +2,10 @@ import { ToolError } from './errors.ts';
 import { MODEL_CATALOG_REVISION } from '@floway-dev/gateway';
 import { canonicalPricingSelectorKey, type ModelPricing, type PriceVector, validateModelPricing } from '@floway-dev/protocols/common';
 import { assertUpstreamProviderKind, isRecord, modelsField, pricingField, type UpstreamModelConfig, type UpstreamProviderKind } from '@floway-dev/provider';
+import { pricingForChatGPTModelKey } from '@floway-dev/provider-chatgpt';
 import { pricingForClaudeCodeModelKey } from '@floway-dev/provider-claude-code';
-import { pricingForCodexModelKey } from '@floway-dev/provider-codex';
 import { pricingForCopilotPublicModelId } from '@floway-dev/provider-copilot';
+import { pricingForKimiCodePublicModelId } from '@floway-dev/provider-kimi-code';
 import { pricingForOllamaModelKey } from '@floway-dev/provider-ollama';
 
 const CATALOG_HARD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -101,10 +102,12 @@ export const resolveUsagePricing = (
   case 'ollama':
     if (manual?.pricing !== undefined) return staticResolution(manual.pricing, `upstream:${upstream.id}:config`);
     return staticResolution(pricingForOllamaModelKey(identity.modelKey), 'provider:ollama');
+  case 'kimi-code':
+    return staticResolution(pricingForKimiCodePublicModelId(identity.model), 'provider:kimi-code');
   case 'copilot':
     return staticResolution(pricingForCopilotPublicModelId(identity.model), 'provider:copilot');
-  case 'codex':
-    return staticResolution(pricingForCodexModelKey(identity.modelKey), 'provider:codex');
+  case 'chatgpt':
+    return staticResolution(pricingForChatGPTModelKey(identity.modelKey), 'provider:chatgpt');
   case 'claude-code':
     return staticResolution(pricingForClaudeCodeModelKey(identity.modelKey), 'provider:claude-code');
   default:

@@ -1,18 +1,20 @@
 import { test } from 'vitest';
 
 import type { InMemoryRepo } from '../../repo/memory.ts';
-import { copilotModels, MOCKED_FETCH_EGRESS, requestApp, setupAppTest } from '../../test-utils/app.ts';
-import { CODEX_USER_AGENT } from '@floway-dev/provider-codex';
+import { saveUpstreamForTest } from '../../repo/upstreams.ts';
+import { copilotModels, MOCKED_FETCH_EGRESS, requestApp, requestAppWithWarmModels, setupAppTest } from '../../test-utils/app.ts';
+import { CHATGPT_USER_AGENT } from '@floway-dev/provider-chatgpt';
 import { assertEquals, assertExists, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
 
 const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/wEAAAAASUVORK5CYII=';
 
 const saveAzureImages = async (repo: InMemoryRepo): Promise<void> => {
-  await repo.upstreams.save({
+  await saveUpstreamForTest(repo.upstreams, {
     id: 'az-image',
     kind: 'azure',
     name: 'azure-images',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 1,
     createdAt: '2026-05-25T00:00:00Z',
     updatedAt: '2026-05-25T00:00:00Z',
@@ -35,11 +37,12 @@ const saveAzureImages = async (repo: InMemoryRepo): Promise<void> => {
 };
 
 const saveCodexImages = async (repo: InMemoryRepo): Promise<void> => {
-  await repo.upstreams.save({
+  await saveUpstreamForTest(repo.upstreams, {
     id: 'codex-image',
-    kind: 'codex',
+    kind: 'chatgpt',
     name: 'ChatGPT Team',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2026-08-09T00:00:00Z',
     updatedAt: '2026-08-09T00:00:00Z',
@@ -97,7 +100,7 @@ test('Codex provider-relative image generation reuses the public image-generatio
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/azure-api.codex/images/generations', {
+      const response = await requestAppWithWarmModels('/azure-api.codex/images/generations', {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-image-2', prompt: 'a fox in space', quality: 'high' }),
@@ -133,7 +136,7 @@ test('ChatGPT Codex accounts expose and serve the implicit gpt-image-2 model', a
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const publicModels = await requestApp('/v1/models', {
+      const publicModels = await requestAppWithWarmModels('/v1/models', {
         headers: { authorization: `Bearer ${apiKey.key}` },
       });
       assertEquals(publicModels.status, 200);
@@ -141,7 +144,7 @@ test('ChatGPT Codex accounts expose and serve the implicit gpt-image-2 model', a
       assertEquals(publicCatalog.data.some(model => model.id === 'gpt-image-2'), true);
 
       const codexModels = await requestApp('/azure-api.codex/models?client_version=0.147.0', {
-        headers: { authorization: `Bearer ${apiKey.key}`, 'user-agent': CODEX_USER_AGENT },
+        headers: { authorization: `Bearer ${apiKey.key}`, 'user-agent': CHATGPT_USER_AGENT },
       });
       assertEquals(codexModels.status, 200);
       const codexCatalog = await codexModels.json() as { models: { slug: string }[] };
@@ -179,7 +182,7 @@ test('Codex provider-relative image edits reuse the public JSON handler', async 
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/azure-api.codex/images/edits', {
+      const response = await requestAppWithWarmModels('/azure-api.codex/images/edits', {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -222,7 +225,7 @@ test('Codex inline data URL edits egress as multipart uploads', async () => {
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/azure-api.codex/images/edits', {
+      const response = await requestAppWithWarmModels('/azure-api.codex/images/edits', {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json' },
         body: JSON.stringify({

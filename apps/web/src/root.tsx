@@ -9,10 +9,10 @@ import criticalCss from 'virtual:floway-critical.css?inline';
 import winuiStylesheet from 'virtual:floway-winui.css?url';
 
 import type { Route } from './+types/root';
+import flowayLogoUrl from './assets/floway-blue.svg?no-inline';
 import { DocumentTitleSync } from './components/document-title-sync';
 import { GradientBackground } from './components/gradient-background';
 import { LanguageSync } from './components/language-sync';
-import { markPickerScript } from './components/logo-mark';
 import { NavigationProgress } from './components/navigation-progress';
 import { ErrorShell, ErrorStack } from './components/ui/error-shell';
 import { AppLoadingScreen } from './components/ui/loading-screen';
@@ -21,6 +21,7 @@ import { defaultLanguage, htmlLanguageFor } from './i18n/languages';
 import { useTranslation } from './i18n/translation';
 import { useSourceMappedStack } from './lib/source-mapped-stack';
 import { DARK_SCHEME_QUERY, useMediaQuery } from './lib/use-media-query';
+import { useSiteSettingsStore } from './stores/site-settings-store';
 import { winuiDarkTheme, winuiLightTheme } from './winui/theme';
 import './i18n';
 import './global.css';
@@ -39,11 +40,19 @@ const { Button, FluentProvider, Spinner } = fluentComponents;
 const SEGOE_UI_VARIABLE_MIRROR_URL = 'https://docs.azure.cn/static/third-party/SegoeUIVariable/SegoeUI-VF.ttf?floway-vf=2.02';
 
 export const links: Route.LinksFunction = () => [
+  { rel: 'icon', type: 'image/svg+xml', href: flowayLogoUrl },
   { rel: 'preconnect', href: 'https://docs.azure.cn', crossOrigin: 'anonymous' },
   { rel: 'preload', as: 'font', type: 'font/ttf', href: SEGOE_UI_VARIABLE_MIRROR_URL, crossOrigin: 'anonymous' },
 ];
 
 const useSystemTheme = () => useMediaQuery(DARK_SCHEME_QUERY) ? winuiDarkTheme : winuiLightTheme;
+
+// The wordmark and document title need the site name before the dashboard
+// paints, and this route mounts once for the whole app.
+export async function clientLoader() {
+  await useSiteSettingsStore.getState().load();
+  return null;
+}
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const theme = useSystemTheme();
@@ -68,8 +77,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
             block above, whose spinner rules reach Fluent's class names at the
             same specificity. */}
         <link href={winuiStylesheet} rel="stylesheet" />
-        {/* Inline so the mark and tab icon are set before anything paints. */}
-        <script dangerouslySetInnerHTML={{ __html: markPickerScript }} />
       </head>
       <body className="text-[14px]">
         <FluentProvider theme={theme}>

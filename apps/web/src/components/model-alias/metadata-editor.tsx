@@ -3,10 +3,12 @@ import { useId, useState } from 'react';
 import type { AnnouncedMetadataField, AnnouncedMetadataIssues } from './validation';
 import { fluentComponents } from '../../fluent';
 import { useTranslation } from '../../i18n/translation';
+import type { ModelLimitKey } from '../models/limits';
+import { ModelLimitsFields } from '../models/limits-editor';
 import { Dropdown, Input, Switch } from '../ui/fluent-form-controls';
 import { SECTION_STACK_CLASS, TWO_COLUMN_FORM_CLASS } from '../ui/layout';
 import { SectionHeader } from '../ui/section-header';
-import type { AnnouncedMetadata, ModelKind } from '@floway-dev/protocols/common';
+import type { AnnouncedMetadata, ModelKind } from '@floway-dev/protocols/browser';
 
 const { Field, Option, Text } = fluentComponents;
 
@@ -25,7 +27,7 @@ export function MetadataEditor({ disabled, issues, kind, onChange, readOnly, val
 }) {
   const { t } = useTranslation();
   const imageInputLabelId = useId();
-  const patchLimit = (key: 'max_context_window_tokens' | 'max_prompt_tokens' | 'max_output_tokens', raw: string) => {
+  const patchLimit = (key: ModelLimitKey, raw: string) => {
     const limits = { ...(value.limits ?? {}), [key]: numberValue(raw) };
     if (limits[key] === undefined) delete limits[key];
     onChange({ ...value, limits: Object.keys(limits).length ? limits : undefined });
@@ -40,7 +42,6 @@ export function MetadataEditor({ disabled, issues, kind, onChange, readOnly, val
     patchChat({ reasoning: Object.keys(reasoning).length ? reasoning : undefined });
   };
   const effort = value.chat?.reasoning?.effort;
-  const effortDefault = effort?.default ?? '';
   const budget = value.chat?.reasoning?.budget_tokens;
   const imageInput = value.chat?.modalities?.input.includes('image') ?? false;
   const issueProps = (field: AnnouncedMetadataField) => issues[field] === undefined
@@ -49,14 +50,21 @@ export function MetadataEditor({ disabled, issues, kind, onChange, readOnly, val
 
   return (
     <div className="grid gap-5" role="group" aria-label={t('dashboard.modelAliases.metadata.heading')}>
-      <section className={SECTION_STACK_CLASS}>
+      {kind !== 'image' && <section className={SECTION_STACK_CLASS}>
         <SectionHeader level={4} title={t('dashboard.modelAliases.metadata.limits')} />
-        <div className="grid grid-cols-3 gap-3 max-[680px]:grid-cols-1">
-          <Field label={t('dashboard.modelAliases.metadata.context')} {...issueProps('max_context_window_tokens')}><Input disabled={disabled} min={0} readOnly={readOnly} type="number" value={value.limits?.max_context_window_tokens?.toString() ?? ''} onChange={(_, data) => patchLimit('max_context_window_tokens', data.value)} /></Field>
-          <Field label={t('dashboard.modelAliases.metadata.prompt')} {...issueProps('max_prompt_tokens')}><Input disabled={disabled} min={0} readOnly={readOnly} type="number" value={value.limits?.max_prompt_tokens?.toString() ?? ''} onChange={(_, data) => patchLimit('max_prompt_tokens', data.value)} /></Field>
-          <Field label={t('dashboard.modelAliases.metadata.output')} {...issueProps('max_output_tokens')}><Input disabled={disabled} min={0} readOnly={readOnly} type="number" value={value.limits?.max_output_tokens?.toString() ?? ''} onChange={(_, data) => patchLimit('max_output_tokens', data.value)} /></Field>
-        </div>
-      </section>
+        <ModelLimitsFields
+          columnGapClass="gap-3"
+          errorFor={key => {
+            const message = issues[key];
+            return message === undefined ? undefined : t(message);
+          }}
+          kind={kind}
+          limits={value.limits}
+          onChange={patchLimit}
+          readOnly={readOnly || disabled}
+          t={t}
+        />
+      </section>}
       {kind === 'chat' && <>
         {/* Image input leads the group that depends on it, matching the shape
             the upstream editor's capabilities section gives the same two fields. */}
@@ -99,11 +107,11 @@ export function MetadataEditor({ disabled, issues, kind, onChange, readOnly, val
               disabled={disabled}
               label={t('dashboard.modelAliases.metadata.efforts')}
               hint={t('dashboard.modelAliases.metadata.effortsHint')}
-              onChange={supported => patchReasoning({ effort: { supported, default: supported.includes(effortDefault) ? effortDefault : supported[0] ?? '' } })}
+              onChange={supported => patchReasoning({ effort: { supported, default: supported.includes(effort.default) ? effort.default : supported[0] ?? '' } })}
               readOnly={readOnly}
               value={effort.supported}
             />
-            <Field label={t('dashboard.modelAliases.metadata.defaultEffort')}><Dropdown disabled={disabled || effort.supported.length === 0} readOnly={readOnly} selectedOptions={effortDefault === '' ? [] : [effortDefault]} value={effortDefault} onOptionSelect={(_, data) => data.optionValue !== undefined && patchReasoning({ effort: { supported: effort.supported, default: data.optionValue } })}>{effort.supported.map(item => <Option key={item} value={item}>{item}</Option>)}</Dropdown></Field>
+            <Field label={t('dashboard.modelAliases.metadata.defaultEffort')}><Dropdown disabled={disabled || effort.supported.length === 0} readOnly={readOnly} selectedOptions={[effort.default]} value={effort.default} onOptionSelect={(_, data) => data.optionValue !== undefined && patchReasoning({ effort: { supported: effort.supported, default: data.optionValue } })}>{effort.supported.map(item => <Option key={item} value={item}>{item}</Option>)}</Dropdown></Field>
           </div>}
           {budget && <div className={`${TWO_COLUMN_FORM_CLASS} gap-3`}>
             <Field label={t('dashboard.modelAliases.metadata.minBudget')} {...issueProps('budgetMin')}><Input disabled={disabled} min={0} readOnly={readOnly} type="number" value={budget.min?.toString() ?? ''} onChange={(_, data) => patchReasoning({ budget_tokens: { ...budget, min: numberValue(data.value) } })} /></Field>

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { createUpstreamBody } from '../../src/control-plane/schemas.ts';
+import { chatgptImportExchangeBody, chatgptImportPreviewBody, createUpstreamBody } from '../../src/control-plane/schemas.ts';
 
 const baseAzure = {
   kind: 'azure' as const,
@@ -17,6 +17,46 @@ const baseAzure = {
   },
 };
 
+describe('ChatGPT import schemas', () => {
+  const record = { id: '', kind: 'chatgpt', config: { accounts: [] }, state: { accounts: [] } };
+
+  test.each([
+    { json: { raw_json: '{}', source_index: 0 } },
+    { callback: { code: 'code', verifier: 'verifier' } },
+    { manual: { access_token: 'opaque' } },
+  ])('accepts exactly one import source', source => {
+    expect(chatgptImportExchangeBody.safeParse({ record, ...source }).success).toBe(true);
+  });
+
+  test('rejects missing or multiple import sources', () => {
+    expect(chatgptImportExchangeBody.safeParse({ record }).success).toBe(false);
+    expect(chatgptImportExchangeBody.safeParse({
+      record,
+      json: { raw_json: '{}', source_index: 0 },
+      manual: { access_token: 'opaque' },
+    }).success).toBe(false);
+  });
+
+  test('requires only access_token for a manual import', () => {
+    expect(chatgptImportExchangeBody.safeParse({
+      record,
+      manual: {
+        access_token: 'opaque',
+        refresh_token: null,
+        id_token: null,
+        account_id: null,
+        expires_at: null,
+      },
+    }).success).toBe(true);
+    expect(chatgptImportExchangeBody.safeParse({ record, manual: {} }).success).toBe(false);
+  });
+
+  test('validates the JSON preview envelope', () => {
+    expect(chatgptImportPreviewBody.safeParse({ raw_json: '{"accounts":[]}' }).success).toBe(true);
+    expect(chatgptImportPreviewBody.safeParse({ raw_json: '' }).success).toBe(false);
+  });
+});
+
 describe('upstreamModelSchema chat', () => {
   test('accepts an audio transcription model', () => {
     const body = structuredClone(baseAzure);
@@ -29,7 +69,7 @@ describe('upstreamModelSchema chat', () => {
   test('accepts a valid chat block with effort', () => {
     const body = structuredClone(baseAzure);
     (body.config.models[0] as Record<string, unknown>).chat = {
-      modalities: { input: ['text', 'image', 'audio'], output: ['text'] },
+      modalities: { input: ['text', 'image'], output: ['text'] },
       reasoning: { effort: { supported: ['low', 'medium'], default: 'low' } },
     };
     expect(createUpstreamBody.safeParse(body).success).toBe(true);

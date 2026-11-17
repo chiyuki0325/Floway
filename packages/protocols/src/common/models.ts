@@ -23,7 +23,29 @@ export interface RerankTarget {
   path?: string;
 }
 
-export type Modality = 'text' | 'image' | 'audio';
+// Decision endpoints speak one of two wire dialects. `typesafe-systemone`
+// carries `state` plus a map of typed questions; reachable servers are TypeSafe
+// Jev's and Ollama's /v1/systemone, Copilot's microsoft-decision-1
+// /v1/systemone, and Microsoft-Decision-1's /providers/microsoft/v1/systemone
+// on Foundry. `openai-decisions` carries `input` plus an array of
+// `predicate`/`choice`/`score` questions; Copilot serves it at
+// gpt-6-luna-decisions' /v1/decisions. One model serves exactly one dialect:
+// Copilot answers 400 `no_available_model_endpoints` when the model is called
+// over the other one.
+export const DECISION_PROTOCOLS = ['typesafe-systemone', 'openai-decisions'] as const;
+export type DecisionProtocol = typeof DECISION_PROTOCOLS[number];
+// Decision has no vendor-neutral upstream URL: Foundry serves it under a
+// resource path the OpenAI v1 base cannot express, and a compatible System One
+// server may expose any path. The operator chooses the wire protocol on each
+// model and may replace its canonical path. Keeping this off the upstream
+// prevents one model's protocol choice from leaking onto every other model at
+// the same base URL.
+export interface DecisionTarget {
+  protocol: DecisionProtocol;
+  path?: string;
+}
+
+export type Modality = 'text' | 'image';
 
 // Chat capability metadata for one model. Providers that can read it off the
 // raw upstream catalog fill it themselves; elsewhere it comes from the
@@ -43,7 +65,7 @@ export interface ChatModelInfo {
   image_detail_original?: boolean;
   reasoning?: {
     // Discrete effort levels — a closed set of named presets (e.g. low/medium/high).
-    effort?: { supported: readonly string[]; default?: string };
+    effort?: { supported: readonly string[]; default: string };
     // Operator-supplied token budget. Bounds are optional; absent bounds mean
     // "operator can supply a budget, but legal range is unknown".
     budget_tokens?: { min?: number; max?: number };
@@ -76,6 +98,29 @@ export interface PublicModelLimits {
   max_prompt_tokens?: number;
 }
 
+// Declares which models may replay an opaque blob emitted by this model. The
+// optional key deliberately remains unmaterialized on the catalog surface: an
+// omitted key means the upstream model id, while bindToUpstream controls
+// whether the concrete upstream instance participates in compatibility.
+export interface OpaqueBlobCompatibilityScope {
+  bindToUpstream: boolean;
+  key?: string;
+}
+
+export interface OpaqueBlobCompatibilityIdentity {
+  upstreamId?: string;
+  key: string;
+}
+
+export const materializeOpaqueBlobCompatibilityIdentity = (
+  scope: OpaqueBlobCompatibilityScope,
+  upstreamId: string,
+  upstreamModelId: string,
+): OpaqueBlobCompatibilityIdentity => ({
+  ...(scope.bindToUpstream ? { upstreamId } : {}),
+  key: scope.key ?? upstreamModelId,
+});
+
 // Public DTO served at /v1/models and /models. Single superset shape — OpenAI's
 // and Anthropic's /models field names do not overlap, so one payload satisfies
 // both client shapes.
@@ -101,11 +146,12 @@ export interface PublicModel {
   // candidate carrying one of its preferred chat targets, and Gemini
   // generateContent has no key of its own at all. The non-chat keys
   // (`openaiCompletions`, `openaiEmbeddings`, `openaiImagesGenerations`,
-  // `openaiImagesEdits`, `rerank`, `openaiAudioTranscriptions`) are callable
-  // exactly where they appear.
+  // `openaiImagesEdits`, `rerank`, `openaiAudioTranscriptions`, `decision`)
+  // are callable exactly where they appear.
   endpoints: ModelEndpoints;
   pricing?: ModelPricing;
   chat?: ChatModelInfo;
+  opaqueBlobCompatibilityScope: OpaqueBlobCompatibilityScope;
   // Present only on entries the gateway synthesized from an operator-defined
   // alias; absent for entries that came from an upstream catalog.
   aliasedFrom?: PublicModelAliasedFrom;

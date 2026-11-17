@@ -28,6 +28,7 @@ const makeRecord = (state: ClaudeCodeUpstreamState): UpstreamRecord => ({
   kind: 'claude-code',
   name: 'Claude Code',
   enabled: true,
+  usageRefreshIntervalMinutes: 0,
   sortOrder: 0,
   createdAt: '2026-06-01T00:00:00.000Z',
   updatedAt: '2026-06-01T00:00:00.000Z',
@@ -82,7 +83,13 @@ beforeEach(() => {
     writes.push(next);
   });
   getByIdSpy = vi.fn(async () => current);
-  repo = { getById: getByIdSpy, saveState: saveStateSpy };
+  repo = {
+    getById: async id => {
+      const record = await getByIdSpy(id);
+      return record === null ? null : { ...record, configVersion: 1 };
+    },
+    saveState: (id, mutate) => saveStateSpy(id, current => mutate(current, 1)),
+  };
 });
 
 afterEach(() => vi.restoreAllMocks());

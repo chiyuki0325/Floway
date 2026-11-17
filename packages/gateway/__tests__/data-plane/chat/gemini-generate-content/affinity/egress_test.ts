@@ -1,13 +1,14 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { wrapGeminiGenerateContentAffinityEgress } from '../../../../../src/data-plane/chat/gemini-generate-content/affinity/egress.ts';
-import type { AffinityCodec, AffinityTarget } from '../../../../../src/data-plane/chat/shared/affinity/index.ts';
+import type { AffinityCodec, AffinityIdentity } from '../../../../../src/data-plane/chat/shared/affinity/index.ts';
 import { eventFrame, type ProtocolFrame } from '@floway-dev/protocols/common';
 import type { GeminiGenerateContentCandidate, GeminiGenerateContentStreamEvent } from '@floway-dev/protocols/gemini-generate-content';
 
-const affinity: AffinityTarget = {
+const affinity: AffinityIdentity = {
   upstreamId: 'up-a',
   modelId: 'model-a',
+  opaqueBlobCompatibilityIdentity: { upstreamId: 'up-a', key: 'model-a' },
 };
 
 type AffinityEgressCodec = Pick<AffinityCodec, 'wrap'>;
@@ -219,7 +220,7 @@ describe('Gemini generateContent affinity egress', () => {
     })]), { codec: immediateCodec, affinity })) output.push(frame);
 
     const event = output[0].type === 'event' && !('error' in output[0].event) ? output[0].event : undefined;
-    expect(event?.candidates?.[0].content.parts).toEqual([
+    expect(event?.candidates?.[0].content?.parts).toEqual([
       { text: 'answer', thoughtSignature: 'wrapped:synthetic' },
       { functionCall: { id: 'call', name: 'tool', args: { a: 1 } }, thoughtSignature: 'wrapped:function-latest' },
       { functionCall: { id: 'call', name: 'tool', args: { b: 2 } } },
@@ -244,7 +245,7 @@ describe('Gemini generateContent affinity egress', () => {
     })]), { codec: immediateCodec, affinity })) output.push(frame);
 
     const event = output[0].type === 'event' && !('error' in output[0].event) ? output[0].event : undefined;
-    const parts = event?.candidates?.[0].content.parts;
+    const parts = event?.candidates?.[0].content?.parts;
     expect(parts?.[0]).toMatchObject({ thoughtSignature: 'wrapped:latest' });
     expect(parts?.[1]).not.toHaveProperty('thoughtSignature');
   });
@@ -530,4 +531,11 @@ describe('Gemini generateContent affinity egress', () => {
     });
     await expect(iterator.next()).rejects.toThrow('upstream failed');
   });
+});
+
+test.each([undefined, { role: 'model' }])('affinity preserves absent parts on finish-only chunks %j', async content => {
+  const event = { candidates: [{ finishReason: 'STOP', ...(content === undefined ? {} : { content }) }] };
+  const output = [];
+  for await (const frame of wrapGeminiGenerateContentAffinityEgress(frames([eventFrame(event)]), { affinity, codec: immediateCodec })) output.push(frame);
+  expect(output).toEqual([eventFrame({ candidates: [{ index: 0, finishReason: 'STOP', ...(content === undefined ? {} : { content }) }] })]);
 });

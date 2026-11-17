@@ -1,14 +1,10 @@
 // Copy this file to wrangler.jsonc and fill in the <YOUR_*> placeholders.
-// wrangler.jsonc is gitignored so that each contributor's own Cloudflare
-// account id, D1 database id, and Worker name stay local. Every concrete
-// value here is load-bearing — `scripts/require-wrangler-config.ts`
-// gates dev and deploy on real wrangler.jsonc mirroring this example
-// exactly in both directions, except that <YOUR_*> placeholders may
-// (and must) be replaced with your own values, and `account_id` may
-// additionally appear only in wrangler.jsonc since it is
-// per-contributor. Anything else the real config needs (extra bindings,
-// extra compat flags, `vars` blocks) belongs in this example first so
-// every contributor and the deploy gate agree on the Worker's shape.
+// wrangler.jsonc is gitignored so each contributor's Cloudflare identifiers
+// stay local. This example defines the Worker topology used by guarded dev,
+// deploy, and migration commands. The real config must mirror it in both
+// directions, replace every <YOUR_*> placeholder, and may additionally carry
+// account_id. The deployment-local observability and placement sections may
+// differ or be absent. Any other topology change belongs here first.
 //
 // 1. Optionally set CLOUDFLARE_ACCOUNT_ID in the environment, or run
 //    `pnpm wrangler login`. If neither is in place, add an `account_id`
@@ -32,7 +28,20 @@
   // `@reclaimprotocol/tls/webcrypto` (used by packages/http and the proxy
   // REALITY dialer) still imports `webcrypto` from `crypto`, so the Worker
   // cannot resolve those modules at cold start without the Node compat flag.
-  "compatibility_flags": ["nodejs_compat"],
+  // `ctx.exports` needs an explicit flag at this compatibility date:
+  // https://developers.cloudflare.com/workers/configuration/compatibility-flags/#enable-ctxexports
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
+  // Observability is deployment-specific and disabled by default. Deployments
+  // that need production diagnostics can replace this whole section or omit it.
+  // A high-volume deployment can start by changing this section to:
+  //   "enabled": true,
+  //   "logs": { "enabled": true, "head_sampling_rate": 0.01 },
+  //   "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  // https://developers.cloudflare.com/workers/observability/logs/workers-logs/#sampling
+  // https://developers.cloudflare.com/workers/observability/traces/#sampling
+  "observability": {
+    "enabled": false
+  },
   "triggers": {
     // Minute scheduling provides catch-up throughput while bounded deletion
     // and collection batches keep each tick's D1 write load predictable.
@@ -46,7 +55,7 @@
     // Workers Static Assets as a SPA fallback) restates, for production on
     // Cloudflare, the set two other files restate for their topologies:
     //
-    //   - The `location ~` regexes in docker/nginx.conf (the docker-compose
+    //   - `isGatewayPath` in apps/platform-node/src/static-web.ts (the Node
     //     self-host topology).
     //   - `wranglerProxiedPaths` in apps/web/gateway-paths.ts (the `vite dev`
     //     proxy-to-wrangler-dev topology).
@@ -100,40 +109,49 @@
   "images": {
     "binding": "IMAGES"
   },
-  // KV namespace backing the platform `ImageCacheStore` abstraction (cache for
-  // compressed WebP results — the Images binding bills every transformation
-  // and does not deduplicate, so this turns a repeated inline image into a
-  // single KV read).
+  // KV namespace backing the platform `ImageCacheStore` abstraction. Repeated
+  // inline images can reuse the compressed WebP result without invoking the
+  // Images binding again.
   "kv_namespaces": [
     {
       "binding": "KV",
       "id": "<YOUR_KV_NAMESPACE_ID>"
     }
   ],
-  // Per-key WebSocket fan-out actor. Content-agnostic — the actor never
-  // inspects the payload; callers layer their own framing via a codec.
+  // Per-use execution cells. The initial broadcast protocol provides
+  // hibernatable WebSocket fan-out; model refresh operations share this
+  // actor host without placing provider data in Durable Object storage.
   "durable_objects": {
     "bindings": [
       {
-        "name": "BROADCAST_DO",
-        "class_name": "BroadcastDO"
+        "name": "EXECUTION_DO",
+        "class_name": "ExecutionDO"
       }
     ]
   },
-  // CF requires every DO class to declare a storage backend at create time,
-  // even when the actor body never calls `ctx.storage.*`. `new_sqlite_classes`
-  // picks the SQLite backend (CF's recommendation for all new classes, the
-  // only backend Workers Free supports, and ~12 KB per empty instance). The
-  // alternative `new_classes` picks the legacy KV-backed storage path which
-  // CF is phasing out and which Workers Free cannot create.
+  // The migration selects the SQLite backend, which Cloudflare recommends for
+  // new Durable Object namespaces. New KV-backed namespaces are unsupported on
+  // accounts without an existing KV-backed namespace, and Workers Free
+  // supports only SQLite-backed Durable Objects.
+  // https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/
+  // https://developers.cloudflare.com/changelog/post/2026-07-09-restrict-new-kv-backed-namespaces/
   //
-  // BroadcastDO has no `ctx.storage.*` calls — the SQLite db is provisioned
+  // ExecutionDO has no `ctx.storage.*` calls — the SQLite db is provisioned
   // but unused. The name reflects the BACKEND choice, not whether the actor
   // touches it.
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["BroadcastDO"]
+    },
+    {
+      "tag": "v2",
+      "renamed_classes": [
+        {
+          "from": "BroadcastDO",
+          "to": "ExecutionDO"
+        }
+      ]
     }
   ]
 }

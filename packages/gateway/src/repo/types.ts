@@ -1,7 +1,12 @@
+import type { AccessPrincipal, AccessRecord, AccessRecordInput } from '../access-control/types.ts';
 import type { WebSearchConfig, WebSearchProviderName } from '../shared/web-search-providers.ts';
 import type { AgentSetupRepository } from '@floway-dev/agent-setup';
-import type { AliasSelection, AliasTarget, AnnouncedMetadata, BillingMetric, DecimalString, ModelKind, PricingSelector } from '@floway-dev/protocols/common';
-import type { PerformanceTelemetryContext, UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
+import type { AliasSelection, AliasTarget, AnnouncedMetadata, BillingMetric, DecimalString, ModelKind, PricingSelector, UserPreferences } from '@floway-dev/protocols/common';
+import type { PerformanceTelemetryContext, UpstreamMetricIdentity, UpstreamModelsCache, UpstreamRecord } from '@floway-dev/provider';
+
+// Provider config, flag overrides, and catalog transport advance this version;
+// runtime state and non-model metadata do not.
+export type StoredUpstreamRecord = UpstreamRecord & { configVersion: number };
 
 export interface ApiKey {
   id: string;
@@ -13,10 +18,11 @@ export interface ApiKey {
   serverSecret: string;
   createdAt: string;
   lastUsedAt?: string;
-  // null = inherit the user-level cap; array = whitelist in priority order.
-  // When both levels carry a list the effective list is their intersection
-  // taken in this order, so a key that sets one also decides the priority.
+  // null = do not narrow the user's Model.Use grants; an array limits them to
+  // these upstreams in this priority order.
   upstreamIds: string[] | null;
+  // Shuffle the effective upstream order once per model resolution.
+  randomizeUpstreams: boolean;
   deletedAt: string | null;
   // null = dump capture disabled; positive integer = seconds of retention.
   dumpRetentionSeconds: number | null;
@@ -33,11 +39,14 @@ export interface User {
   // dev-only passwordless shortcut when ADMIN_KEY is unset).
   passwordHash: string | null;
   isAdmin: boolean;
-  // null = unrestricted at the user level; an array intersects with the
-  // per-key whitelist when both are present. Membership only — the key's
-  // order carries the intersection, so this order applies only to requests
-  // whose key sets no list of its own.
-  upstreamIds: string[] | null;
+  createdAt: string;
+  deletedAt: string | null;
+}
+
+export interface Group {
+  id: number;
+  name: string;
+  hue: number;
   createdAt: string;
   deletedAt: string | null;
 }
@@ -84,6 +93,8 @@ export interface UsageOverviewFilters {
 export interface UsageOverviewQueryOptions {
   actorUserId: number;
   isAdmin: boolean;
+  visibleUserIds: readonly number[];
+  visibleUpstreams: readonly string[];
   start: string;
   end: string;
   groupBy: UsageOverviewGroupBy;
@@ -148,7 +159,7 @@ export interface PerformanceDimensions extends PerformanceTelemetryContext {
   hour: string;              // 'YYYY-MM-DDTHH'
 }
 
-// TPOT is measurable only when at least two output tokens are streamed; the
+// TPOT is measurable only when at least two output tokens are reported; the
 // caller (recordPerformance) enforces that gate before setting `tpotUs`. A
 // TTFT-only sample omits it entirely.
 //
@@ -221,6 +232,8 @@ export interface PerformanceOverviewFilters {
 export interface PerformanceOverviewQueryOptions {
   actorUserId: number;
   isAdmin: boolean;
+  visibleUserIds: readonly number[];
+  visibleUpstreams: readonly string[];
   start: string;
   end: string;
   groupBy: PerformanceOverviewGroupBy;
@@ -279,8 +292,16 @@ export interface ApiKeyRepo {
 
 export type ApiKeyUpdate = Partial<Pick<
   ApiKey,
-  'name' | 'key' | 'lastUsedAt' | 'upstreamIds' | 'dumpRetentionSeconds' | 'openaiResponsesRetentionSeconds'
+  'name' | 'key' | 'lastUsedAt' | 'upstreamIds' | 'randomizeUpstreams' | 'dumpRetentionSeconds' | 'openaiResponsesRetentionSeconds'
 >>;
+
+export interface UserPreferencesRepo {
+  /** The stored preferences for a user, or the defaults when the account has never written any. */
+  get(userId: number): Promise<UserPreferences>;
+  save(userId: number, preferences: UserPreferences): Promise<void>;
+  listAll(): Promise<Array<{ userId: number; preferences: UserPreferences }>>;
+  deleteAll(): Promise<void>;
+}
 
 export interface UsersRepo {
   list(): Promise<User[]>;
@@ -293,8 +314,56 @@ export interface UsersRepo {
   createNewUser(template: Omit<User, 'id'>): Promise<User>;
   // Throws when the username is already taken by another active row, so
   // duplicate-username races surface instead of silently overwriting state.
-  save(user: User): Promise<void>;
+  save(user: User, groupIds?: readonly number[]): Promise<void>;
   softDelete(id: number): Promise<boolean>;
+  deleteAll(): Promise<void>;
+}
+
+export type GroupWithMembers = Group & { memberIds: number[] };
+
+export interface GroupMembership {
+  groupId: number;
+  userId: number;
+  createdAt: string;
+}
+
+export interface UserDirectory {
+  users: User[];
+  groups: Group[];
+  memberships: GroupMembership[];
+}
+
+export interface GroupsRepo {
+  list(): Promise<Group[]>;
+  listIncludingDeleted(): Promise<Group[]>;
+  getById(id: number): Promise<Group | null>;
+  findByName(name: string): Promise<Group | null>;
+  create(name: string, hue: number): Promise<Group>;
+  save(group: Group): Promise<void>;
+  // Restore supplied IDs and memberships atomically, including name swaps.
+  restore(groups: readonly GroupWithMembers[]): Promise<void>;
+  softDelete(id: number): Promise<boolean>;
+  listMemberIds(groupId: number): Promise<number[]>;
+  listMemberships(): Promise<Map<number, number[]>>;
+  setMember(groupId: number, userId: number, included: boolean): Promise<void>;
+  replaceUserGroups(userId: number, groupIds: readonly number[]): Promise<void>;
+  listIdsByUserId(userId: number): Promise<number[]>;
+  listIdsByUserIds(userIds: readonly number[]): Promise<Map<number, number[]>>;
+  replaceMembers(groupId: number, userIds: readonly number[]): Promise<void>;
+  deleteMembershipsByUserId(userId: number): Promise<number>;
+  deleteAll(): Promise<void>;
+}
+
+export interface AccessRecordsRepo {
+  list(): Promise<AccessRecord[]>;
+  getById(id: number): Promise<AccessRecord | null>;
+  listByPrincipal(principal: AccessPrincipal): Promise<AccessRecord[]>;
+  listByPrincipals(principals: readonly AccessPrincipal[]): Promise<AccessRecord[]>;
+  save(input: AccessRecordInput): Promise<AccessRecord>;
+  replace(id: number, input: AccessRecordInput): Promise<AccessRecord | null>;
+  reorderModel(upstreamId: string, expectedIds: readonly number[], ids: readonly number[]): Promise<AccessRecord[] | null>;
+  delete(id: number): Promise<boolean>;
+  deleteByPrincipal(principal: AccessPrincipal): Promise<number>;
   deleteAll(): Promise<void>;
 }
 
@@ -353,16 +422,35 @@ export interface PerformanceRepo {
   deleteAll(): Promise<void>;
 }
 
+export interface SiteSettings {
+  // null = this deployment has not chosen a name; the dashboard renders its
+  // built-in default and keeps tracking it across releases.
+  siteName: string | null;
+}
+
+export interface SiteSettingsRepo {
+  get(): Promise<SiteSettings>;
+  save(settings: SiteSettings): Promise<void>;
+}
+
 export interface WebSearchConfigRepo {
   get(): Promise<unknown>;
   save(config: WebSearchConfig): Promise<void>;
 }
 
 export interface UpstreamRepo {
-  list(): Promise<UpstreamRecord[]>;
-  getById(id: string): Promise<UpstreamRecord | null>;
-  save(upstream: UpstreamRecord): Promise<void>;
-  saveClearingModelsCache(upstream: UpstreamRecord): Promise<void>;
+  list(): Promise<StoredUpstreamRecord[]>;
+  getById(id: string): Promise<StoredUpstreamRecord | null>;
+  reorder(
+    expectedIds: readonly string[],
+    assignments: readonly { id: string; sortOrder: number }[],
+  ): Promise<StoredUpstreamRecord[] | null>;
+  insertAtEndForModels(upstream: UpstreamRecord): Promise<StoredUpstreamRecord | null>;
+  insertForModels(upstream: UpstreamRecord): Promise<StoredUpstreamRecord | null>;
+  replaceForModels(input: {
+    previous: StoredUpstreamRecord;
+    upstream: UpstreamRecord;
+  }): Promise<StoredUpstreamRecord | null>;
   delete(id: string): Promise<boolean>;
   deleteAll(): Promise<void>;
   // Upstream state write with optimistic concurrency, used both by the
@@ -371,17 +459,30 @@ export interface UpstreamRepo {
   // a CAS, retrying against the winner when it loses; exhausting the retries
   // throws. See UpstreamsRepoSlim in @floway-dev/provider for why the change
   // is a function.
-  saveState(id: string, mutate: (current: unknown) => unknown): Promise<void>;
-  // Catalog-cache writes are conditional on the row generation that started
-  // the fetch. A superseded provider can finish serving its own request, but
-  // cannot publish models or errors under newer credentials/configuration.
-  saveModelsCache(id: string, generation: ModelsCacheGeneration, cache: Omit<UpstreamModelsCache, 'lastError'>): Promise<boolean>;
-  saveModelsCacheError(id: string, generation: ModelsCacheGeneration, error: NonNullable<UpstreamModelsCache['lastError']>): Promise<boolean>;
+  saveState(id: string, mutate: (current: unknown, configVersion: number) => unknown): Promise<void>;
+  publishModelsRefresh(input: ModelsRefreshSuccessInput): Promise<boolean>;
+  recordModelsRefreshFailure(input: ModelsRefreshFailureInput): Promise<boolean>;
 }
 
-export interface ModelsCacheGeneration {
-  updatedAt: string;
-  config: unknown;
+export interface ModelsRefreshIdentity {
+  id: string;
+  configVersion: number;
+  cacheEpoch: number;
+  refreshInputs: {
+    provider: UpstreamRecord['kind'];
+    configJson: string;
+    flagOverridesJson: string;
+    proxyFallbackListJson: string;
+  };
+}
+
+export interface ModelsRefreshSuccessInput extends ModelsRefreshIdentity {
+  cache: Omit<UpstreamModelsCache, 'lastError'>;
+}
+
+export interface ModelsRefreshFailureInput extends ModelsRefreshIdentity {
+  error: Pick<NonNullable<UpstreamModelsCache['lastError']>, 'message' | 'at'>;
+  previousFailureCount: number;
 }
 
 export interface ProxyRecord {
@@ -492,11 +593,6 @@ export interface StoredOpenAIResponsesItem {
 
 export interface StoredOpenAIResponsesItemPayload {
   item: unknown;
-  // Ancillary state stashed alongside the public `item` body but never sent on
-  // the wire: a server-only slot to preserve data a stateless client strips
-  // from the echoed item (e.g. the real `web_search_call` results) so a later
-  // turn can restore it on replay. Persisted and round-tripped verbatim.
-  private?: unknown;
 }
 
 export interface OpenAIResponsesItemsRepo {
@@ -559,14 +655,37 @@ export interface ScheduledMaintenanceRepo {
 // here satisfy that contract. Re-exported so the repo layer imports one source.
 export type { AgentSetupMutation, AgentSetupRecord, AgentSetupRenewal, AgentSetupRepository } from '@floway-dev/agent-setup';
 
+export interface UpstreamMetricRecord extends UpstreamMetricIdentity {
+  upstreamId: string;
+  timestamp: number;
+  value: number;
+}
+
+export interface UpstreamMetricsRepo {
+  listAll(): Promise<UpstreamMetricRecord[]>;
+  set(record: UpstreamMetricRecord): Promise<void>;
+  deleteAll(): Promise<void>;
+  record(record: UpstreamMetricRecord): Promise<void>;
+  // The latest sample of each series in every `step`-wide bucket counted from
+  // `start`, which is Prometheus's range-query semantics for gauges.
+  query(upstreamId: string, start: number, end: number, step: number): Promise<UpstreamMetricRecord[]>;
+}
+
 export interface Repo {
+  // Active users, groups and their memberships must share one read snapshot.
+  readUserDirectory(): Promise<UserDirectory>;
+  upstreamMetrics: UpstreamMetricsRepo;
   apiKeys: ApiKeyRepo;
   users: UsersRepo;
+  userPreferences: UserPreferencesRepo;
+  groups: GroupsRepo;
+  accessRecords: AccessRecordsRepo;
   sessions: SessionsRepo;
   usage: UsageRepo;
   webSearchUsage: WebSearchUsageRepo;
   performance: PerformanceRepo;
   upstreamConcurrency: UpstreamConcurrencyRepo;
+  siteSettings: SiteSettingsRepo;
   webSearchConfig: WebSearchConfigRepo;
   upstreams: UpstreamRepo;
   proxies: ProxyRepo;

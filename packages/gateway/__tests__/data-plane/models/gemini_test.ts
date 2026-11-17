@@ -1,8 +1,13 @@
 import { test } from 'vitest';
 
-import { buildCustomUpstreamRecord, copilotModels, requestApp, setupAppTest } from '../../test-utils/app.ts';
+import { saveUpstreamForTest } from '../../repo/upstreams.ts';
+import { buildCustomUpstreamRecord, copilotModels, requestAppWithWarmModels, setupAppTest } from '../../test-utils/app.ts';
 import { clearInProcessCopilotTokenCache } from '@floway-dev/provider-copilot';
 import { jsonResponse, withMockedFetch, assertEquals } from '@floway-dev/test-utils';
+
+// The listing shape follows the client identity, not the path, so a Gemini
+// suite addresses the Gemini shape the same way a real SDK does.
+const GEMINI_HEADERS = (apiKey: string) => ({ 'x-api-key': apiKey, 'user-agent': 'google-genai-sdk/1.0.0 gl-node/cross' });
 
 test('/v1beta/models lists Copilot LLM models in Gemini model shape', async () => {
   const { apiKey } = await setupAppTest();
@@ -62,8 +67,8 @@ test('/v1beta/models lists Copilot LLM models in Gemini model shape', async () =
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const response = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
 
       assertEquals(response.status, 200);
@@ -110,16 +115,16 @@ test('/v1beta/models/:modelId returns one Gemini model or Google RPC 404', async
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const found = await requestApp('/v1beta/models/gpt-gemini-get', {
-        headers: { 'x-api-key': apiKey.key },
+      const found = await requestAppWithWarmModels('/v1beta/models/gpt-gemini-get', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
       assertEquals(found.status, 200);
       const model = await found.json();
       assertEquals(model.name, 'models/gpt-gemini-get');
       assertEquals(model.supportedGenerationMethods, ['generateContent', 'streamGenerateContent', 'countTokens']);
 
-      const missing = await requestApp('/v1beta/models/missing-model', {
-        headers: { 'x-api-key': apiKey.key },
+      const missing = await requestAppWithWarmModels('/v1beta/models/missing-model', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
       assertEquals(missing.status, 404);
       assertEquals(await missing.json(), {
@@ -133,12 +138,50 @@ test('/v1beta/models/:modelId returns one Gemini model or Google RPC 404', async
   );
 });
 
+test('the model detail answer is identical under /v1 and /v1beta', async () => {
+  const { apiKey, repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  clearInProcessCopilotTokenCache();
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
+    id: 'up_detail_alias',
+    name: 'Detail Alias',
+    sortOrder: 100,
+    config: {
+      baseUrl: 'https://detail-alias.example.com',
+      authStyle: 'bearer',
+      ingressHeadersRules: [],
+      apiKey: 'sk-detail-alias',
+      endpoints: { openaiChatCompletions: {} },
+    },
+  }));
+
+  await withMockedFetch(
+    request => {
+      const url = new URL(request.url);
+      if (url.hostname === 'detail-alias.example.com' && url.pathname === '/v1/models') {
+        return jsonResponse({ object: 'list', data: [{ id: 'detail-alias-model' }] });
+      }
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => {
+      const bodies = [];
+      for (const path of ['/v1/models/detail-alias-model', '/v1beta/models/detail-alias-model']) {
+        const response = await requestAppWithWarmModels(path, { headers: GEMINI_HEADERS(apiKey.key) });
+        assertEquals(response.status, 200);
+        bodies.push(await response.json());
+      }
+      assertEquals(bodies[0], bodies[1]);
+      assertEquals((bodies[0] as { name: string }).name, 'models/detail-alias-model');
+    },
+  );
+});
+
 test('/v1beta/models includes custom upstream LLM models', async () => {
   const { apiKey, repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_custom',
     name: 'Custom LLM',
     sortOrder: 100,
@@ -166,8 +209,8 @@ test('/v1beta/models includes custom upstream LLM models', async () => {
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const listResp = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const listResp = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
       assertEquals(listResp.status, 200);
       const list = await listResp.json();
@@ -176,8 +219,8 @@ test('/v1beta/models includes custom upstream LLM models', async () => {
       assertEquals(list.models[0].displayName, 'Custom LLM Model');
       assertEquals(list.models[0].supportedGenerationMethods, ['generateContent', 'streamGenerateContent', 'countTokens']);
 
-      const getResp = await requestApp('/v1beta/models/custom-llm-model', {
-        headers: { 'x-api-key': apiKey.key },
+      const getResp = await requestAppWithWarmModels('/v1beta/models/custom-llm-model', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
       assertEquals(getResp.status, 200);
       const model = await getResp.json();
@@ -191,7 +234,7 @@ test('/v1beta/models excludes custom upstream embedding-only models', async () =
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_embed',
     name: 'Embedding Provider',
     sortOrder: 100,
@@ -219,8 +262,8 @@ test('/v1beta/models excludes custom upstream embedding-only models', async () =
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const listResp = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const listResp = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
       assertEquals(listResp.status, 200);
       const list = await listResp.json();
@@ -234,7 +277,7 @@ test('/v1beta/models hides upstream identity when a provider returns an invalid 
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_secret_gemini_provider',
     name: 'Secret Gemini Provider',
     sortOrder: 100,
@@ -259,17 +302,11 @@ test('/v1beta/models hides upstream identity when a provider returns an invalid 
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const response = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
-      assertEquals(response.status, 502);
-      assertEquals(await response.json(), {
-        error: {
-          code: 502,
-          message: 'Upstream model listing failed',
-          status: 'UNAVAILABLE',
-        },
-      });
+      assertEquals(response.status, 200);
+      assertEquals(await response.json(), { models: [] });
     },
   );
 });
@@ -279,7 +316,7 @@ test('/v1beta/models hides upstream HTTP error bodies', async () => {
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_http_secret_gemini_provider',
     name: 'HTTP Secret Gemini Provider',
     sortOrder: 100,
@@ -307,17 +344,12 @@ test('/v1beta/models hides upstream HTTP error bodies', async () => {
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const response = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
-      assertEquals(response.status, 502);
-      assertEquals(await response.json(), {
-        error: {
-          code: 502,
-          message: 'Upstream model listing failed',
-          status: 'UNAVAILABLE',
-        },
-      });
+      assertEquals(response.status, 200);
+      const body = JSON.stringify(await response.json());
+      assertEquals(body, '{"models":[]}');
     },
   );
 });
@@ -327,7 +359,7 @@ test('/v1beta/models hides thrown upstream request errors', async () => {
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_throw_secret_gemini_provider',
     name: 'Throw Secret Gemini Provider',
     sortOrder: 100,
@@ -352,17 +384,12 @@ test('/v1beta/models hides thrown upstream request errors', async () => {
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const response = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
-      assertEquals(response.status, 502);
-      assertEquals(await response.json(), {
-        error: {
-          code: 502,
-          message: 'Upstream model listing failed',
-          status: 'UNAVAILABLE',
-        },
-      });
+      assertEquals(response.status, 200);
+      const body = JSON.stringify(await response.json());
+      assertEquals(body.includes('gemini-throw-secret.example.com'), false);
     },
   );
 });
@@ -372,7 +399,7 @@ test('/v1beta/models hides malformed upstream response bodies', async () => {
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_malformed_secret_gemini_provider',
     name: 'Malformed Secret Gemini Provider',
     sortOrder: 100,
@@ -400,17 +427,13 @@ test('/v1beta/models hides malformed upstream response bodies', async () => {
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const response = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
-      assertEquals(response.status, 502);
-      assertEquals(await response.json(), {
-        error: {
-          code: 502,
-          message: 'Upstream model listing failed',
-          status: 'UNAVAILABLE',
-        },
-      });
+      assertEquals(response.status, 200);
+      const body = JSON.stringify(await response.json());
+      assertEquals(body.includes('secret malformed body'), false);
+      assertEquals(body.includes('up_malformed_secret_gemini'), false);
     },
   );
 });
@@ -424,7 +447,7 @@ test('/v1beta/models emits visible aliases as models/<alias-name> entries with d
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_gemini_alias',
     name: 'Alias Provider for Gemini Listing',
     sortOrder: 100,
@@ -460,8 +483,8 @@ test('/v1beta/models emits visible aliases as models/<alias-name> entries with d
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const response = await requestApp('/v1beta/models', {
-        headers: { 'x-api-key': apiKey.key },
+      const response = await requestAppWithWarmModels('/v1beta/models', {
+        headers: GEMINI_HEADERS(apiKey.key),
       });
       assertEquals(response.status, 200);
       const body = (await response.json()) as { models: Array<{ name: string; displayName?: string; baseModelId?: string }> };
@@ -469,6 +492,73 @@ test('/v1beta/models emits visible aliases as models/<alias-name> entries with d
       if (!aliasEntry) throw new Error(`missing alias entry; got ${JSON.stringify(body.models.map(m => m.name))}`);
       assertEquals(aliasEntry.displayName, 'Operator Fast Alias');
       assertEquals(aliasEntry.baseModelId, 'gpt-fast');
+    },
+  );
+});
+
+test('the model listing selects the Gemini shape from the client identity on either prefix', async () => {
+  const { apiKey, repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  clearInProcessCopilotTokenCache();
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
+    id: 'up_identity',
+    name: 'Identity Provider',
+    sortOrder: 100,
+    config: {
+      baseUrl: 'https://identity.example.com',
+      authStyle: 'bearer',
+      ingressHeadersRules: [],
+      apiKey: 'sk-identity',
+      endpoints: { openaiChatCompletions: {} },
+    },
+  }));
+
+  await withMockedFetch(
+    request => {
+      const url = new URL(request.url);
+      if (url.hostname === 'identity.example.com' && url.pathname === '/v1/models') {
+        return jsonResponse({ object: 'list', data: [{ id: 'identity-model' }] });
+      }
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => {
+      for (const path of ['/v1/models', '/v1beta/models']) {
+        const gemini = await requestAppWithWarmModels(path, { headers: GEMINI_HEADERS(apiKey.key) });
+        assertEquals(gemini.status, 200);
+        assertEquals(((await gemini.json()) as { models: Array<{ name: string }> }).models.map(model => model.name), ['models/identity-model']);
+
+        // The same paths serve the OpenAI/Anthropic superset to every other
+        // caller, so the path alone never implies a Gemini body.
+        const generic = await requestAppWithWarmModels(path, { headers: { 'x-api-key': apiKey.key } });
+        assertEquals(generic.status, 200);
+        assertEquals(((await generic.json()) as { data: Array<{ id: string }> }).data.map(model => model.id), ['identity-model']);
+      }
+    },
+  );
+});
+
+test('Gemini clients are recognized through x-goog-api-client and the legacy SDK labels', async () => {
+  const { apiKey } = await setupAppTest();
+
+  await withMockedFetch(
+    request => {
+      if (new URL(request.url).hostname === 'api.individual.githubcopilot.com') return jsonResponse(copilotModels([]));
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => {
+      const identities: ReadonlyArray<Record<string, string>> = [
+        { 'x-goog-api-client': 'google-genai-sdk/1.0.0 gl-python/3.13.0' },
+        { 'user-agent': 'GeminiCLI/0.12.0/gemini-2.5-pro (darwin; arm64; shell)', 'x-goog-api-client': 'google-genai-sdk/1.3.0 gl-node/cross' },
+        { 'user-agent': 'genai-py/0.8.5 gl-python/3.12.0' },
+        { 'x-goog-api-client': 'genai-js/0.24.1' },
+      ];
+      for (const identity of identities) {
+        const response = await requestAppWithWarmModels('/v1/models', { headers: { 'x-api-key': apiKey.key, ...identity } });
+        assertEquals(response.status, 200);
+        const body = await response.json() as { models?: unknown; data?: unknown };
+        assertEquals(Array.isArray(body.models), true);
+        assertEquals(body.data, undefined);
+      }
     },
   );
 });

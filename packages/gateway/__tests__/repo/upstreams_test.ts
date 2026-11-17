@@ -1,7 +1,8 @@
 import { test } from 'vitest';
 
 import { InMemoryRepo } from './memory.ts';
-import { createSqlJsDatabase, migrationSqlByFilename, wrapSqlJsDatabase, type SqlJsDatabase } from './test-sqlite.ts';
+import { createSqliteTestDb, createSqlJsDatabase, migrationSqlByFilename, wrapSqlJsDatabase, type SqlJsDatabase } from './test-sqlite.ts';
+import { saveUpstreamForTest } from './upstreams.ts';
 import { SqlRepo } from '../../src/repo/sql.ts';
 import type { UpstreamRepo } from '../../src/repo/types.ts';
 import type { SqlDatabase } from '@floway-dev/platform';
@@ -12,6 +13,7 @@ import { assert, assertEquals, assertRejects, assertThrows } from '@floway-dev/t
 const upstream = (overrides: Partial<UpstreamRecord> & Pick<UpstreamRecord, 'id' | 'kind' | 'createdAt' | 'sortOrder'>): UpstreamRecord => ({
   name: overrides.id,
   enabled: true,
+  usageRefreshIntervalMinutes: 0,
   updatedAt: overrides.createdAt,
   config: { nested: { value: overrides.id }, endpoints: { openaiChatCompletions: {} } },
   state: null,
@@ -24,7 +26,7 @@ const upstream = (overrides: Partial<UpstreamRecord> & Pick<UpstreamRecord, 'id'
   ...overrides,
 });
 
-test('memory upstream repo saves, lists, updates, deletes, and clears rows', async () => {
+test('memory upstream repo inserts, replaces, lists, deletes, and clears rows', async () => {
   const repo = new InMemoryRepo().upstreams;
 
   const custom = upstream({
@@ -52,22 +54,23 @@ test('memory upstream repo saves, lists, updates, deletes, and clears rows', asy
     updatedAt: '2026-05-21T10:00:01.000Z',
   });
 
-  await repo.save(custom);
-  await repo.save(copilot);
-  await repo.save(azure);
+  await saveUpstreamForTest(repo, custom);
+  await saveUpstreamForTest(repo, copilot);
+  await saveUpstreamForTest(repo, azure);
 
   assertEquals(
     (await repo.list()).map(row => row.id),
     ['up_azure_a', 'up_copilot_a', 'up_custom_a'],
   );
 
-  assertEquals(await repo.getById('up_custom_a'), custom);
+  assertEquals(await repo.getById('up_custom_a'), { ...custom, configVersion: 1 });
   assertEquals(await repo.getById('missing'), null);
 
   const updatedCustom = upstream({
     ...custom,
     name: 'Custom A Updated',
     enabled: false,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2099-01-01T00:00:00.000Z',
     updatedAt: '2026-05-21T10:00:04.000Z',
@@ -75,7 +78,7 @@ test('memory upstream repo saves, lists, updates, deletes, and clears rows', asy
     flagOverrides: { 'strip-prompt-cache-key': true },
     disabledPublicModelIds: [],
   });
-  await repo.save(updatedCustom);
+  await saveUpstreamForTest(repo, updatedCustom);
 
   assertEquals(
     (await repo.list()).map(row => [row.id, row.name, row.enabled]),
@@ -114,7 +117,7 @@ test('memory upstream repo deeply clones configs and flag overrides at the repo 
     disabledPublicModelIds: [],
   });
 
-  await repo.save(original);
+  await saveUpstreamForTest(repo, original);
   original.flagOverrides['strip-billing-attribution'] = true;
   (original.config as { nested: { headers: string[] } }).nested.headers.push('mutated-after-save');
 
@@ -140,10 +143,10 @@ test('memory upstream repo deeply clones configs and flag overrides at the repo 
   });
 });
 
-test('memory upstream repo sorts flag overrides by key when saving rows', async () => {
+test('memory upstream repo sorts flag overrides by key when inserting rows', async () => {
   const repo = new InMemoryRepo().upstreams;
 
-  await repo.save(
+  await saveUpstreamForTest(repo,
     upstream({
       id: 'up_copilot_fixes',
       kind: 'copilot',
@@ -151,10 +154,54 @@ test('memory upstream repo sorts flag overrides by key when saving rows', async 
       createdAt: '2026-05-21T10:00:00.000Z',
       flagOverrides: { 'vendor-deepseek': true, 'rewrite-developer-to-system': false, 'anthropic-messages-web-search-shim': true },
       disabledPublicModelIds: [],
-    }),
-  );
+    }));
 
   assertEquals((await repo.getById('up_copilot_fixes'))?.flagOverrides, { 'rewrite-developer-to-system': false, 'anthropic-messages-web-search-shim': true, 'vendor-deepseek': true });
+});
+
+const exerciseUpstreamReorder = async (repo: UpstreamRepo) => {
+  for (const [id, sortOrder] of [['a', 10], ['b', 20], ['c', 40]] as const) {
+    await saveUpstreamForTest(repo, upstream({ id, kind: 'custom', sortOrder, createdAt: `2026-05-21T10:00:${sortOrder}.000Z` }));
+  }
+
+  const reordered = await repo.reorder(
+    ['a', 'b', 'c'],
+    [{ id: 'c', sortOrder: 20 }, { id: 'b', sortOrder: 40 }],
+  );
+  assertEquals(reordered?.map(record => [record.id, record.sortOrder]), [['c', 20], ['b', 40]]);
+  assertEquals((await repo.list()).map(record => [record.id, record.sortOrder]), [['a', 10], ['c', 20], ['b', 40]]);
+
+  assertEquals(await repo.reorder(
+    ['a', 'b', 'c'],
+    [{ id: 'b', sortOrder: 20 }, { id: 'c', sortOrder: 40 }],
+  ), null);
+  assertEquals((await repo.list()).map(record => [record.id, record.sortOrder]), [['a', 10], ['c', 20], ['b', 40]]);
+};
+
+const exerciseAtomicAppend = async (repo: UpstreamRepo) => {
+  await saveUpstreamForTest(repo, upstream({ id: 'first', kind: 'custom', sortOrder: 10, createdAt: '2026-05-21T10:00:00.000Z' }));
+  const append = (id: string) => repo.insertAtEndForModels(upstream({ id, kind: 'custom', sortOrder: -100, createdAt: `2026-05-21T10:00:0${id}.000Z` }));
+  const [a, b] = await Promise.all([append('1'), append('2')]);
+  assert(a !== null);
+  assert(b !== null);
+  assertEquals(new Set([a.sortOrder, b.sortOrder]), new Set([11, 12]));
+  assertEquals((await repo.list()).map(record => record.sortOrder), [10, 11, 12]);
+};
+
+test('memory upstream repo atomically reorders a current snapshot', async () => {
+  await exerciseUpstreamReorder(new InMemoryRepo().upstreams);
+});
+
+test('SQL upstream repo atomically reorders a current snapshot', async () => {
+  await exerciseUpstreamReorder(new SqlRepo(await createSqliteTestDb()).upstreams);
+});
+
+test('memory upstream repo atomically assigns append ranks', async () => {
+  await exerciseAtomicAppend(new InMemoryRepo().upstreams);
+});
+
+test('SQL upstream repo atomically assigns append ranks', async () => {
+  await exerciseAtomicAppend(new SqlRepo(await createSqliteTestDb()).upstreams);
 });
 
 const exerciseSqlUpstreamRepo = async (repo: UpstreamRepo) => {
@@ -188,9 +235,9 @@ const exerciseSqlUpstreamRepo = async (repo: UpstreamRepo) => {
     config: { endpoint: 'https://azure.example', apiKey: 'azure-key', models: [] },
   });
 
-  await repo.save(custom);
-  await repo.save(copilot);
-  await repo.save(azure);
+  await saveUpstreamForTest(repo, custom);
+  await saveUpstreamForTest(repo, copilot);
+  await saveUpstreamForTest(repo, azure);
 
   assertEquals(
     (await repo.list()).map(row => row.id),
@@ -199,10 +246,11 @@ const exerciseSqlUpstreamRepo = async (repo: UpstreamRepo) => {
   assertEquals((await repo.getById('up_custom_sql'))?.flagOverrides, { 'rewrite-developer-to-system': true, 'vendor-deepseek': true });
   assertEquals(await repo.getById('missing'), null);
 
-  await repo.save({
+  await saveUpstreamForTest(repo, {
     ...custom,
     name: 'Custom SQL Updated',
     enabled: false,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2099-01-01T00:00:00.000Z',
     updatedAt: '2026-05-21T10:00:04.000Z',
@@ -231,8 +279,8 @@ const exerciseSqlUpstreamRepo = async (repo: UpstreamRepo) => {
   assertEquals(await repo.list(), []);
 };
 
-test('SQL upstream repo saves, lists, updates, deletes, and clears rows', async () => {
-  await exerciseSqlUpstreamRepo(new SqlRepo(new FakeUpstreamsSqlDatabase()).upstreams);
+test('SQL upstream repo inserts, replaces, lists, deletes, and clears rows', async () => {
+  await exerciseSqlUpstreamRepo(new SqlRepo(await createSqliteTestDb()).upstreams);
 });
 
 test('SQL upstream repo rejects malformed stored upstream JSON', async () => {
@@ -242,9 +290,11 @@ test('SQL upstream repo rejects malformed stored upstream JSON', async () => {
     provider: 'custom',
     name: 'Bad Config',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-05-21T10:00:00.000Z',
     updated_at: '2026-05-21T10:00:00.000Z',
+    config_version: 1,
     config_json: '{bad json',
     state_json: null,
     models_cache_json: null,
@@ -265,9 +315,11 @@ test('SQL upstream repo rejects malformed stored flag overrides JSON', async () 
     provider: 'custom',
     name: 'Bad Fixes',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-05-21T10:00:00.000Z',
     updated_at: '2026-05-21T10:00:00.000Z',
+    config_version: 1,
     config_json: '{}',
     state_json: null,
     models_cache_json: null,
@@ -288,9 +340,11 @@ test('SQL upstream repo rejects array-shaped flag_overrides with helpful message
     provider: 'custom',
     name: 'Array Fixes',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-05-21T10:00:00.000Z',
     updated_at: '2026-05-21T10:00:00.000Z',
+    config_version: 1,
     config_json: '{}',
     state_json: null,
     models_cache_json: null,
@@ -315,9 +369,11 @@ test('SQL upstream repo rejects non-boolean value in flag_overrides with helpful
     provider: 'custom',
     name: 'Non-boolean Fixes',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-05-21T10:00:00.000Z',
     updated_at: '2026-05-21T10:00:00.000Z',
+    config_version: 1,
     config_json: '{}',
     state_json: null,
     models_cache_json: null,
@@ -342,9 +398,11 @@ test('SQL upstream repo rejects malformed stored model_prefix_json', async () =>
     provider: 'custom',
     name: 'Bad Prefix JSON',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-05-21T10:00:00.000Z',
     updated_at: '2026-05-21T10:00:00.000Z',
+    config_version: 1,
     config_json: '{}',
     state_json: null,
     models_cache_json: null,
@@ -365,9 +423,11 @@ test('SQL upstream repo rejects shape-invalid model_prefix_json', async () => {
     provider: 'custom',
     name: 'Bad Prefix Shape',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-05-21T10:00:00.000Z',
     updated_at: '2026-05-21T10:00:00.000Z',
+    config_version: 1,
     config_json: '{}',
     state_json: null,
     models_cache_json: null,
@@ -383,14 +443,14 @@ test('SQL upstream repo rejects shape-invalid model_prefix_json', async () => {
 });
 
 test('SQL upstream repo round-trips a non-null model_prefix', async () => {
-  const db = new FakeUpstreamsSqlDatabase();
-  const repo = new SqlRepo(db).upstreams;
+  const repo = new SqlRepo(await createSqliteTestDb()).upstreams;
   const now = new Date().toISOString();
   const record: UpstreamRecord = {
     id: 'up_prefix_rt',
     kind: 'custom',
     name: 'Prefix Round-Trip',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: now,
     updatedAt: now,
@@ -403,21 +463,21 @@ test('SQL upstream repo round-trips a non-null model_prefix', async () => {
     modelsCache: null,
     hue: 210,
   };
-  await repo.save(record);
+  await saveUpstreamForTest(repo, record);
   const reloaded = await repo.getById('up_prefix_rt');
   assertEquals(reloaded?.modelPrefix, { prefix: 'or/', addressable: ['unprefixed', 'prefixed'], listed: ['prefixed'] });
 });
 
 test('SQL upstream repo round-trips the badge hue', async () => {
-  const repo = new SqlRepo(new FakeUpstreamsSqlDatabase()).upstreams;
-  await repo.save(upstream({
+  const repo = new SqlRepo(await createSqliteTestDb()).upstreams;
+  await saveUpstreamForTest(repo, upstream({
     id: 'up_hue_zero',
     kind: 'custom',
     sortOrder: 0,
     createdAt: '2026-07-01T00:00:00.000Z',
     hue: 0,
   }));
-  await repo.save(upstream({
+  await saveUpstreamForTest(repo, upstream({
     id: 'up_hue_top',
     kind: 'custom',
     sortOrder: 1,
@@ -436,9 +496,11 @@ test('SQL upstream repo rejects a stored hue outside the circle', async () => {
     provider: 'custom',
     name: 'Bad Hue',
     enabled: 1,
+    usage_refresh_interval_minutes: 0,
     sort_order: 0,
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
+    config_version: 1,
     config_json: '{}',
     state_json: null,
     models_cache_json: null,
@@ -951,9 +1013,11 @@ type FakeUpstreamRow = {
   provider: string;
   name: string;
   enabled: number;
+  usage_refresh_interval_minutes: number;
   sort_order: number;
   created_at: string;
   updated_at: string;
+  config_version: number;
   config_json: string;
   state_json: string | null;
   models_cache_json: string | null;
@@ -995,19 +1059,6 @@ class FakeUpstreamsSqlPreparedStatement {
   }
 
   run(): Promise<{ results: never[]; success: true; meta: Record<string, unknown> }> {
-    if (this.query.startsWith('INSERT INTO upstreams')) {
-      this.db.upsert(this.binds);
-      return Promise.resolve({ results: [], success: true, meta: { changes: 1 } });
-    }
-    if (this.query === 'DELETE FROM upstreams') {
-      this.db.rows = [];
-      return Promise.resolve({ results: [], success: true, meta: { changes: 0 } });
-    }
-    if (this.query.startsWith('DELETE FROM upstreams WHERE id = ?')) {
-      const deleted = this.db.deleteById(this.binds[0] as string);
-      return Promise.resolve({ results: [], success: true, meta: { changes: deleted ? 1 : 0 } });
-    }
-
     throw new Error(`Unsupported run() query in upstreams test: ${this.query}`);
   }
 }
@@ -1028,43 +1079,6 @@ class FakeUpstreamsSqlDatabase implements SqlDatabase {
   selectById(id: string): FakeUpstreamRow | undefined {
     const row = this.rows.find(candidate => candidate.id === id);
     return row ? cloneFakeUpstreamRow(row) : undefined;
-  }
-
-  upsert(binds: unknown[]): void {
-    const [id, provider, name, enabled, sortOrder, createdAt, updatedAt, configJson, stateJson, flagOverrides, disabledPublicModelIds, proxyFallbackListJson, modelPrefixJson, hue] = binds as [string, string, string, number, number, string, string, string, string | null, string, string, string, string | null, number];
-    const existingIndex = this.rows.findIndex(candidate => candidate.id === id);
-    const existing = existingIndex >= 0 ? this.rows[existingIndex] : undefined;
-    const preservedCreatedAt = existing ? existing.created_at : createdAt;
-    const row = {
-      id,
-      provider,
-      name,
-      enabled,
-      sort_order: sortOrder,
-      created_at: preservedCreatedAt,
-      updated_at: updatedAt,
-      config_json: configJson,
-      state_json: stateJson,
-      // The upsert statement names no cache column, so an existing row keeps
-      // whatever the refresh path wrote and a new row starts uncached.
-      models_cache_json: existing?.models_cache_json ?? null,
-      flag_overrides: flagOverrides,
-      disabled_public_model_ids: disabledPublicModelIds,
-      proxy_fallback_list_json: proxyFallbackListJson,
-      model_prefix_json: modelPrefixJson,
-      hue,
-    };
-    if (existingIndex >= 0) {
-      this.rows[existingIndex] = row;
-      return;
-    }
-    this.rows.push(row);
-  }
-
-  deleteById(id: string): boolean {
-    const previousLength = this.rows.length;
-    this.rows = this.rows.filter(row => row.id !== id);
-    return this.rows.length !== previousLength;
   }
 }
 

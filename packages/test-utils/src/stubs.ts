@@ -26,9 +26,11 @@ export const noopAnthropicMessagesUpstreamCallOptions = (overrides: Partial<Anth
 // that build a ctx by hand use `stubProviderModel` directly.
 export const stubProviderModel = (overrides: Partial<ProviderModel> = {}): ProviderModel => ({
   id: 'test-model',
+  upstreamModelId: 'test-model',
   limits: {},
   kind: 'chat',
   endpoints: { openaiChatCompletions: {}, openaiResponses: {}, anthropicMessages: {} },
+  opaqueBlobCompatibilityScope: { bindToUpstream: true },
   enabledFlags: new Set<FlagId>(),
   ...overrides,
 });
@@ -75,6 +77,7 @@ export const mockPerfTelemetryContext = (overrides: Partial<PerformanceTelemetry
 });
 
 export const stubProvider = (overrides: Partial<ProviderInstance> = {}): ProviderInstance => ({
+  runScheduledTask: overrides.runScheduledTask ?? (() => Promise.resolve()),
   getProvidedModels: overrides.getProvidedModels ?? (() => Promise.resolve([])),
   callAlphaSearch: overrides.callAlphaSearch ?? (() => Promise.reject(new Error('stubProvider.callAlphaSearch was called'))),
   callOpenAICompletions: overrides.callOpenAICompletions ?? (() => Promise.reject(new Error('stubProvider.callOpenAICompletions was called'))),
@@ -87,6 +90,7 @@ export const stubProvider = (overrides: Partial<ProviderInstance> = {}): Provide
   callOpenAIImagesEdits: overrides.callOpenAIImagesEdits ?? (() => Promise.reject(new Error('stubProvider.callOpenAIImagesEdits was called'))),
   callOpenAIAudioTranscriptions: overrides.callOpenAIAudioTranscriptions ?? (() => Promise.reject(new Error('stubProvider.callOpenAIAudioTranscriptions was called'))),
   callRerank: overrides.callRerank ?? (() => Promise.reject(new Error('stubProvider.callRerank was called'))),
+  callDecision: overrides.callDecision ?? (() => Promise.reject(new Error('stubProvider.callDecision was called'))),
 });
 
 // Stitches together a candidate whose `model.providerModels` map carries an
@@ -122,6 +126,7 @@ export const stubModelCandidate = (overrides: {
   } as const;
   const providerModel = stubProviderModel({
     id: outerMeta.id,
+    upstreamModelId: outerMeta.id,
     limits: outerMeta.limits,
     kind: outerMeta.kind,
     endpoints: outerMeta.endpoints,

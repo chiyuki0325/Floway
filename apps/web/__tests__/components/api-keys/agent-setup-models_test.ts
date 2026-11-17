@@ -35,6 +35,19 @@ describe('Agent Setup model ranking', () => {
       'other',
     ]);
   });
+
+  it('retains the chat catalog for omp in catalog order and leaves ids opaque', () => {
+    expect(rankAgentSetupModels([
+      catalogModel('gpt-4o', { contextWindow: 200_000 }),
+      catalogModel('claude-sonnet-4-5', { contextWindow: 200_000 }),
+      catalogModel('embedding', { kind: 'embedding', endpoints: { openaiEmbeddings: {} } }),
+    ], { family: 'omp' }).map(entry => entry.id)).toEqual([
+      'gpt-4o',
+      'claude-sonnet-4-5',
+    ]);
+    expect(buildAgentModelOptions([catalogModel('claude-sonnet-4-5', { contextWindow: 1_000_000 })], { family: 'omp' })[0]?.value)
+      .toBe('claude-sonnet-4-5');
+  });
 });
 
 describe('Agent Setup persisted model values', () => {
@@ -43,7 +56,7 @@ describe('Agent Setup persisted model values', () => {
       catalogModel('claude-sonnet-4-5', { contextWindow: 1_000_000 }),
       catalogModel('claude-sonnet-4-5[1m]', { contextWindow: 1_000_000 }),
     ], { family: 'claude', picker: 'sonnet' })).toEqual([
-      { value: 'claude-sonnet-4-5[1m]', publicModelId: 'claude-sonnet-4-5' },
+      { value: 'claude-sonnet-4-5[1m]', label: 'claude-sonnet-4-5' },
     ]);
   });
 
@@ -54,6 +67,19 @@ describe('Agent Setup persisted model values', () => {
       .toBe('gpt-5.6');
   });
 
+  it('retains the chat catalog for Pi in catalog order and leaves ids opaque', () => {
+    expect(rankAgentSetupModels([
+      catalogModel('gpt-4o', { contextWindow: 200_000 }),
+      catalogModel('claude-sonnet-4-5', { contextWindow: 200_000 }),
+      catalogModel('embedding', { kind: 'embedding', endpoints: { openaiEmbeddings: {} } }),
+    ], { family: 'pi' }).map(entry => entry.id)).toEqual([
+      'gpt-4o',
+      'claude-sonnet-4-5',
+    ]);
+    expect(buildAgentModelOptions([catalogModel('claude-sonnet-4-5', { contextWindow: 1_000_000 })], { family: 'pi' })[0]?.value)
+      .toBe('claude-sonnet-4-5');
+  });
+
   it('leaves a Claude model that cannot reach the window unsuffixed', () => {
     expect(buildAgentModelOptions([catalogModel('claude-haiku-4-5', { contextWindow: 200_000 })], { family: 'claude', picker: 'haiku' })[0]?.value)
       .toBe('claude-haiku-4-5');
@@ -61,6 +87,12 @@ describe('Agent Setup persisted model values', () => {
 });
 
 describe('Agent Setup model picker', () => {
+  it('labels subscription models by catalog name while retaining the public model id', () => {
+    const options = modelOptions([catalogModel('kimi-k2.8-preview', { display_name: 'Kimi K2.8 Preview' })], 'codex', 'default');
+    expect(options).toEqual([{ value: 'kimi-k2.8-preview', label: 'Kimi K2.8 Preview' }]);
+    expect(filterModelOptions(options, 'k2.8')).toEqual(options);
+    expect(filterModelOptions(options, 'kimi-k2.8-preview')).toEqual(options);
+  });
   it('offers the full chat catalog while ranking the requested family', () => {
     const options = modelOptions([
       catalogModel('gpt-5.6', { contextWindow: 400_000 }),

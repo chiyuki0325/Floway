@@ -6,10 +6,11 @@ import type {
 import { flagDefaultsForKind } from '../../data-plane/providers/registry.ts';
 import type { FlagOverrides, ProxyFallbackEntry, UpstreamProviderKind, UpstreamRecord } from '@floway-dev/provider';
 import { assertAzureUpstreamRecord } from '@floway-dev/provider-azure';
+import { assertChatGPTUpstreamRecord, assertChatGPTUpstreamState } from '@floway-dev/provider-chatgpt';
 import { assertClaudeCodeUpstreamRecord, assertClaudeCodeUpstreamState } from '@floway-dev/provider-claude-code';
-import { assertCodexUpstreamRecord, assertCodexUpstreamState } from '@floway-dev/provider-codex';
 import { assertCopilotUpstreamRecord, assertCopilotUpstreamState } from '@floway-dev/provider-copilot';
 import { assertCustomUpstreamRecord } from '@floway-dev/provider-custom';
+import { assertKimiCodeUpstreamRecord, readKimiCodeUpstreamState } from '@floway-dev/provider-kimi-code';
 import { assertOllamaUpstreamRecord, readOllamaUpstreamState } from '@floway-dev/provider-ollama';
 
 export type { FullSerializedUpstreamRecord } from './types.ts';
@@ -21,6 +22,7 @@ const serializeBase = (upstream: UpstreamRecord) => ({
   id: upstream.id,
   name: upstream.name,
   enabled: upstream.enabled,
+  usage_refresh_interval_minutes: upstream.usageRefreshIntervalMinutes,
   sort_order: upstream.sortOrder,
   created_at: upstream.createdAt,
   updated_at: upstream.updatedAt,
@@ -94,9 +96,9 @@ export const upstreamRecordToJson = (upstream: UpstreamRecord): RedactedSerializ
       state,
     };
   }
-  case 'codex': {
-    assertCodexUpstreamRecord(upstream);
-    assertCodexUpstreamState(upstream.state);
+  case 'chatgpt': {
+    assertChatGPTUpstreamRecord(upstream);
+    assertChatGPTUpstreamState(upstream.state);
     const state = {
       accounts: upstream.state.accounts.map(account => ({
         chatgptAccountId: account.chatgptAccountId,
@@ -104,9 +106,15 @@ export const upstreamRecordToJson = (upstream: UpstreamRecord): RedactedSerializ
         ...(account.state_message !== undefined ? { state_message: account.state_message } : {}),
         state_updated_at: account.state_updated_at,
         refresh_token_set: hasSecret(account.refresh_token),
+        // The bearer stays server-only; its timing is what lets the dashboard
+        // explain why a credential is or is not usable right now. Mirrors what
+        // the Claude Code branch below exposes for the same reason.
+        accessToken: account.accessToken === null
+          ? null
+          : { expiresAt: account.accessToken.expiresAt, refreshedAt: account.accessToken.refreshedAt },
       })),
     };
-    return { ...base, kind: 'codex', config: clone(upstream.config), state };
+    return { ...base, kind: 'chatgpt', config: clone(upstream.config), state };
   }
   case 'claude-code': {
     assertClaudeCodeUpstreamRecord(upstream);
@@ -127,6 +135,10 @@ export const upstreamRecordToJson = (upstream: UpstreamRecord): RedactedSerializ
       })),
     };
     return { ...base, kind: 'claude-code', config: clone(upstream.config), state };
+  }
+  case 'kimi-code': {
+    const { config } = assertKimiCodeUpstreamRecord(upstream);
+    return { ...base, kind: 'kimi-code', config: { region: config.region, apiKeySet: hasSecret(config.apiKey) }, state: upstream.state === null ? null : readKimiCodeUpstreamState(upstream.state) };
   }
   case 'ollama': {
     const { config } = assertOllamaUpstreamRecord(upstream);
@@ -158,15 +170,19 @@ export const upstreamRecordToFullJson = (upstream: UpstreamRecord): FullSerializ
     if (record.state !== null) assertCopilotUpstreamState(record.state);
     return { ...base, kind: 'copilot', config: clone(record.config), state: clone(record.state) };
   }
-  case 'codex': {
-    assertCodexUpstreamRecord(upstream);
-    assertCodexUpstreamState(upstream.state);
-    return { ...base, kind: 'codex', config: clone(upstream.config), state: clone(upstream.state) };
+  case 'chatgpt': {
+    assertChatGPTUpstreamRecord(upstream);
+    assertChatGPTUpstreamState(upstream.state);
+    return { ...base, kind: 'chatgpt', config: clone(upstream.config), state: clone(upstream.state) };
   }
   case 'claude-code': {
     assertClaudeCodeUpstreamRecord(upstream);
     assertClaudeCodeUpstreamState(upstream.state);
     return { ...base, kind: 'claude-code', config: clone(upstream.config), state: clone(upstream.state) };
+  }
+  case 'kimi-code': {
+    const { config } = assertKimiCodeUpstreamRecord(upstream);
+    return { ...base, kind: 'kimi-code', config: clone(config), state: upstream.state === null ? null : readKimiCodeUpstreamState(upstream.state) };
   }
   case 'ollama': {
     const record = assertOllamaUpstreamRecord(upstream);
@@ -179,6 +195,7 @@ const blueprintBase = (kind: UpstreamProviderKind) => ({
   id: '',
   name: '',
   enabled: false,
+  usage_refresh_interval_minutes: 0,
   sort_order: 0,
   created_at: '',
   updated_at: '',
@@ -203,10 +220,12 @@ export const blueprintUpstreamRecord = (kind: UpstreamProviderKind): BlueprintSe
     return { ...base, kind, config: { baseUrl: '', authStyle: 'bearer', apiKey: '', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [], modelsFetch: { enabled: true }, models: [] }, state: null };
   case 'azure':
     return { ...base, kind, config: { endpoint: '', apiKey: '', models: [] }, state: null };
-  case 'codex':
+  case 'chatgpt':
     return { ...base, kind, config: { accounts: [] }, state: { accounts: [] } };
   case 'claude-code':
     return { ...base, kind, config: { accounts: [] }, state: { accounts: [] } };
+  case 'kimi-code':
+    return { ...base, kind, config: { region: 'china', apiKey: '' }, state: null };
   case 'ollama':
     return { ...base, kind, config: { baseUrl: '', apiKey: '', cloudUsage: false, models: [] }, state: null };
   }

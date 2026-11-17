@@ -8,7 +8,7 @@
 //
 // `limits`, `chat`, `endpoints`, and `pricing` are computed against the
 // GATEWAY-WIDE addressable surface — every caller sees the same numbers
-// for the same alias, independent of their data-plane cap. The operator's
+// for the same alias, independent of caller visibility. The operator's
 // stored `announced_metadata` override still wins at sub-block
 // granularity (a present `limits` / `chat` replaces the computed
 // counterpart wholesale, not per-leaf). The intersection is the safe
@@ -24,7 +24,7 @@
 //
 // Caller-scope (the addressable surface this specific request can
 // reach) controls only two things: whether the alias appears in this
-// caller's response (at least one target reachable under the cap), and
+// caller's response (at least one target in that caller-scoped set), and
 // the `aliasedFrom.targets` projection when `narrowTargets` is true.
 //
 // Collision: when an alias's `name` exactly equals a real model id, the
@@ -38,7 +38,7 @@ import type { AddressableIdEntry } from './addressable.ts';
 import type { ModelAliasRecord } from '../../../repo/types.ts';
 import { unionEndpoints } from '../../providers/endpoint-union.ts';
 import { composeAliasDisplayName } from '@floway-dev/protocols/common';
-import type { AliasTarget, AnnouncedMetadata, ChatModelInfo, PublicModelLimits } from '@floway-dev/protocols/common';
+import type { AliasTarget, AnnouncedMetadata, ChatModelInfo, OpaqueBlobCompatibilityScope, PublicModelLimits } from '@floway-dev/protocols/common';
 import type { InternalAliasedFrom, InternalModel } from '@floway-dev/provider';
 
 export interface ListedAliasInputs {
@@ -61,7 +61,7 @@ export interface ListedAliasInputs {
   // data-plane response, and non-admin control-plane responses. False
   // for admin sessions on the control plane: the alias-edit dialog
   // needs to see every target the operator wired, including typos and
-  // targets on upstreams the admin self-restricted out of, so the
+  // targets that are typo'd, removed, or currently unavailable, so the
   // configuration is editable end to end.
   readonly narrowTargets: boolean;
 }
@@ -198,12 +198,25 @@ const intersectLimits = (limitsList: readonly PublicModelLimits[]): PublicModelL
   return result;
 };
 
+const commonOpaqueBlobCompatibilityScope = (
+  models: readonly InternalModel[],
+): OpaqueBlobCompatibilityScope => {
+  const [first, ...rest] = models;
+  const scope = first?.opaqueBlobCompatibilityScope;
+  if (scope !== undefined && rest.every(model =>
+    model.opaqueBlobCompatibilityScope?.bindToUpstream === scope.bindToUpstream
+    && model.opaqueBlobCompatibilityScope?.key === scope.key)) {
+    return scope;
+  }
+  return { bindToUpstream: true };
+};
+
 // `narrowTargets=true` filters `targets` to those the caller's addressable
 // surface can serve — protects non-admin / data-plane callers from seeing
 // operator state (target IDs from upstreams they have no access to, plus
 // typo'd / removed model IDs). `narrowTargets=false` is the admin-debug
 // view: every configured target survives so the dashboard's alias editor
-// can render the full configuration even when the admin self-restricted.
+// can render the full configured target list, including unavailable targets.
 const buildAliasedFrom = (
   alias: ModelAliasRecord,
   addressableModelIds: readonly AddressableIdEntry[],
@@ -313,6 +326,7 @@ const synthesizeOne = (
     limits,
     kind: alias.kind,
     endpoints,
+    opaqueBlobCompatibilityScope: commonOpaqueBlobCompatibilityScope(gatewayAvailable.map(({ real }) => real)),
     aliasedFrom: buildAliasedFrom(alias, callerAddressableModelIds, narrowTargets),
     ...(chat !== undefined ? { chat } : {}),
     ...(singleTargetPricing !== undefined ? { pricing: singleTargetPricing } : {}),
@@ -335,10 +349,11 @@ export const synthesizeListedAliases = (input: ListedAliasInputs): InternalModel
     .filter((entry): entry is InternalModel => entry !== null);
 
 // Compose real-model rows with visible alias rows into a single `InternalModel[]`.
-// Shared merge point across the alias-aware listing endpoints (OpenAI
-// `/v1/models`, Gemini `/v1beta/models`, dashboard `/api/models`); the Codex
-// wire-shape branch in the shared models handler opts out by consuming the
-// real-only catalog directly. Callers project the returned rows onto their
+// Shared merge point across the alias-aware listing endpoints (the OpenAI and
+// Gemini projections of `/v1/models` and its `/models` and `/v1beta/models`
+// aliases, plus the dashboard's `/api/models`); the Codex wire-shape branch in
+// the shared models handler opts out by consuming the real-only catalog
+// directly. Callers project the returned rows onto their
 // wire shape with a single mapper that reads `.aliasedFrom` off the
 // discriminated union to decide whether to emit the alias sidecar. Collision
 // handling is spelled out at the file header.

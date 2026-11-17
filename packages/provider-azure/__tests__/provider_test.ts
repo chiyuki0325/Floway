@@ -31,6 +31,7 @@ const azureRecord = (overrides: Partial<UpstreamRecord> = {}): UpstreamRecord =>
     kind: 'azure',
     name: 'Azure Resource',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2026-05-21T00:00:00.000Z',
     updatedAt: '2026-05-21T00:00:00.000Z',
@@ -70,6 +71,10 @@ test('createAzureProvider projects configured models into upstream models', asyn
       },
     ],
   );
+  assertEquals(models.map(model => model.opaqueBlobCompatibilityScope), [
+    { bindToUpstream: true },
+    { bindToUpstream: true },
+  ]);
   assertEquals(models[0].limits.max_context_window_tokens, 128000);
 });
 
@@ -437,6 +442,7 @@ test('createAzureProvider exposes image models and routes generations with api-v
     kind: 'azure',
     name: 'azure-images',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2026-05-25T00:00:00Z',
     updatedAt: '2026-05-25T00:00:00Z',
@@ -486,6 +492,7 @@ test('createAzureProvider callOpenAIImagesEdits posts multipart with model repla
     kind: 'azure',
     name: 'azure-images',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2026-05-25T00:00:00Z',
     updatedAt: '2026-05-25T00:00:00Z',

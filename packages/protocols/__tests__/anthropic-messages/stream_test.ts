@@ -17,6 +17,7 @@ test('parseAnthropicMessagesStream parses Anthropic Messages SSE frames into pro
       JSON.stringify({
         type: 'message_start',
         message: {
+          container: null, diagnostics: null, stop_details: null,
           id: 'msg_1',
           type: 'message',
           role: 'assistant',
@@ -24,7 +25,7 @@ test('parseAnthropicMessagesStream parses Anthropic Messages SSE frames into pro
           model: 'claude-test',
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 1, output_tokens: 0 },
+          usage: { cache_creation: null, cache_creation_input_tokens: null, cache_read_input_tokens: null, inference_geo: null, output_tokens_details: null, server_tool_use: null, service_tier: null, input_tokens: 1, output_tokens: 0 },
         },
       }),
       'message_start',
@@ -41,6 +42,7 @@ test('parseAnthropicMessagesStream parses Anthropic Messages SSE frames into pro
     event: {
       type: 'message_start',
       message: {
+        container: null, diagnostics: null, stop_details: null,
         id: 'msg_1',
         type: 'message',
         role: 'assistant',
@@ -48,7 +50,7 @@ test('parseAnthropicMessagesStream parses Anthropic Messages SSE frames into pro
         model: 'claude-test',
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 0 },
+        usage: { cache_creation: null, cache_creation_input_tokens: null, cache_read_input_tokens: null, inference_geo: null, output_tokens_details: null, server_tool_use: null, service_tier: null, input_tokens: 1, output_tokens: 0 },
       },
     },
   });
@@ -64,4 +66,19 @@ test('parseAnthropicMessagesStream rejects malformed Anthropic Messages SSE JSON
     Error,
     'Malformed upstream Anthropic Messages SSE JSON for event "message_delta": not json',
   );
+});
+
+test('parseAnthropicMessagesStream observes raw SSE frames before decoding them', async () => {
+  const observed: Array<{ event?: string; data: string }> = [];
+  await collect(parseAnthropicMessagesStream(sseFrameBody(
+    sseFrame('', 'ping'),
+    sseFrame('{"type":"message_stop"}', 'message_stop'),
+  ), {
+    onSseFrame: frame => observed.push({ event: frame.event, data: frame.data }),
+  }));
+
+  assertEquals(observed, [
+    { event: 'ping', data: '' },
+    { event: 'message_stop', data: '{"type":"message_stop"}' },
+  ]);
 });

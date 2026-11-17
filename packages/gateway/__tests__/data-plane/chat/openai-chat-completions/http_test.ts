@@ -1,10 +1,13 @@
 import { type Context, Hono } from 'hono';
 import { test, vi } from 'vitest';
 
+import { initDumpBroker, initDumpStore } from '../../../../src/dump/registry.ts';
 import type { AuthVars } from '../../../../src/middleware/auth.ts';
 import { initRepo } from '../../../../src/repo/index.ts';
 import type { ApiKey, User } from '../../../../src/repo/types.ts';
+import { installDumpStubs } from '../../../dump/test-fixtures.ts';
 import { InMemoryRepo } from '../../../repo/memory.ts';
+import { flushBackground } from '../../../test-utils/background-tracker.ts';
 import { doneFrame, eventFrame, type ModelEndpoints, type ProtocolFrame } from '@floway-dev/protocols/common';
 import type { OpenAIChatCompletionsStreamEvent } from '@floway-dev/protocols/openai-chat-completions';
 import { type ModelCandidate, directFetcher, type ProviderStreamResult, type UpstreamCallOptions } from '@floway-dev/provider';
@@ -45,6 +48,7 @@ const buildApiKey = (overrides: Partial<ApiKey> = {}): ApiKey => ({
   serverSecret: '00'.repeat(32),
   createdAt: '2026-01-01T00:00:00.000Z',
   upstreamIds: null,
+  randomizeUpstreams: false,
   deletedAt: null,
   dumpRetentionSeconds: null,
   openaiResponsesRetentionSeconds: 0,
@@ -56,16 +60,15 @@ const buildUser = (overrides: Partial<User> = {}): User => ({
   username: 'http_test',
   passwordHash: null,
   isAdmin: false,
-  upstreamIds: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   deletedAt: null,
   ...overrides,
 });
 
-const makeApp = (middleware?: (c: Context) => void): Hono<{ Variables: AuthVars }> => {
+const makeApp = (middleware?: (c: Context) => void, apiKeyOverrides: Partial<ApiKey> = {}): Hono<{ Variables: AuthVars }> => {
   const app = new Hono<{ Variables: AuthVars }>();
   app.use('*', async (c, next) => {
-    c.set('apiKey', buildApiKey());
+    c.set('apiKey', buildApiKey(apiKeyOverrides));
     c.set('user', buildUser());
     middleware?.(c);
     await next();
@@ -77,15 +80,15 @@ const makeApp = (middleware?: (c: Context) => void): Hono<{ Variables: AuthVars 
 const makeOpenAIChatCompletionsEvents = (): readonly OpenAIChatCompletionsStreamEvent[] => [
   {
     id: 'chatcmpl_http', object: 'chat.completion.chunk', created: 0, model: 'test-model',
-    choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+    choices: [{  index: 0, delta: { role: 'assistant' }, finish_reason: null }],
   },
   {
     id: 'chatcmpl_http', object: 'chat.completion.chunk', created: 0, model: 'test-model',
-    choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }],
+    choices: [{  index: 0, delta: { content: 'hi' }, finish_reason: null }],
   },
   {
     id: 'chatcmpl_http', object: 'chat.completion.chunk', created: 0, model: 'test-model',
-    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    choices: [{  index: 0, delta: {}, finish_reason: 'stop' }],
   },
   {
     id: 'chatcmpl_http', object: 'chat.completion.chunk', created: 0, model: 'test-model',
@@ -171,14 +174,14 @@ test('client-carried opaque state restores the exact preferred candidate on the 
           object: 'chat.completion.chunk',
           created: 0,
           model: 'test-model',
-          choices: [{ index: 0, delta: { content: `turn ${turn}`, ...(turn === 1 ? { reasoning_opaque: 'opaque-a' } : {}) }, finish_reason: null }],
+          choices: [{  index: 0, delta: { content: `turn ${turn}`, ...(turn === 1 ? { reasoning_opaque: 'opaque-a' } : {}) }, finish_reason: null }],
         },
         {
           id: `chatcmpl_affinity_${turn}`,
           object: 'chat.completion.chunk',
           created: 0,
           model: 'test-model',
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          choices: [{  index: 0, delta: {}, finish_reason: 'stop' }],
         },
       ]),
       modelKey: 'a',
@@ -371,4 +374,94 @@ test('POST /v1/chat/completions renders the OpenAI-shaped model-unsupported 400 
   const body = await response.json() as { error: { message: string; type: string } };
   assertEquals(body.error.type, 'invalid_request_error');
   assert(body.error.message.includes('does not support'));
+});
+
+test('POST /v1/chat/completions stamps TTFT on a streamed record', async () => {
+  installRepo();
+  const dumpStubs = installDumpStubs(initDumpStore, initDumpBroker);
+  const callOpenAIChatCompletions = vi.fn(async (
+    _model: unknown,
+    _body: unknown,
+    _signal?: AbortSignal,
+    opts?: UpstreamCallOptions,
+  ): Promise<ProviderStreamResult<OpenAIChatCompletionsStreamEvent>> => {
+    return await (opts?.wrapUpstreamCall ?? (d => d()))(async () => ({
+      ok: true, events: makeProtocolFrames(makeOpenAIChatCompletionsEvents()), modelKey: 'k', headers: new Headers(),
+    }));
+  });
+  queueCandidates([makeCandidate({ callOpenAIChatCompletions })]);
+
+  const app = makeApp(undefined, { dumpRetentionSeconds: 3600 });
+  const response = await app.request('/v1/chat/completions', {
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ model: 'test-model', stream: true, messages: [{ role: 'user', content: 'hello' }] }),
+  });
+
+  assertEquals(response.status, 200);
+  await response.text();
+  await flushBackground();
+  assertEquals(dumpStubs.stored.length, 1);
+  const meta = dumpStubs.stored[0]!.record.meta;
+  assert(meta.ttftMs !== null && meta.ttftMs !== undefined && meta.ttftMs >= 0);
+});
+
+test('POST /v1/chat/completions leaves TTFT absent on a non-streaming record', async () => {
+  installRepo();
+  const dumpStubs = installDumpStubs(initDumpStore, initDumpBroker);
+  const callOpenAIChatCompletions = vi.fn(async (
+    _model: unknown,
+    _body: unknown,
+    _signal?: AbortSignal,
+    opts?: UpstreamCallOptions,
+  ): Promise<ProviderStreamResult<OpenAIChatCompletionsStreamEvent>> => {
+    return await (opts?.wrapUpstreamCall ?? (d => d()))(async () => ({
+      ok: true, events: makeProtocolFrames(makeOpenAIChatCompletionsEvents()), modelKey: 'k', headers: new Headers(),
+    }));
+  });
+  queueCandidates([makeCandidate({ callOpenAIChatCompletions })]);
+
+  const app = makeApp(undefined, { dumpRetentionSeconds: 3600 });
+  const response = await app.request('/v1/chat/completions', {
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ model: 'test-model', stream: false, messages: [{ role: 'user', content: 'hello' }] }),
+  });
+
+  assertEquals(response.status, 200);
+  await response.json();
+  await flushBackground();
+  assertEquals(dumpStubs.stored.length, 1);
+  const meta = dumpStubs.stored[0]!.record.meta;
+  assertEquals(meta.ttftMs, null);
+});
+
+test('POST /v1/chat/completions leaves TTFT absent on a failure before output', async () => {
+  installRepo();
+  const dumpStubs = installDumpStubs(initDumpStore, initDumpBroker);
+  const callOpenAIChatCompletions = vi.fn(async (
+    _model: unknown,
+    _body: unknown,
+    _signal?: AbortSignal,
+    opts?: UpstreamCallOptions,
+  ): Promise<ProviderStreamResult<OpenAIChatCompletionsStreamEvent>> => {
+    return await (opts?.wrapUpstreamCall ?? (d => d()))(async () => ({
+      ok: false, response: new Response('Bad Gateway', { status: 502 }), modelKey: 'k',
+    }));
+  });
+  queueCandidates([makeCandidate({ callOpenAIChatCompletions })]);
+
+  const app = makeApp(undefined, { dumpRetentionSeconds: 3600 });
+  const response = await app.request('/v1/chat/completions', {
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ model: 'test-model', stream: true, messages: [{ role: 'user', content: 'hello' }] }),
+  });
+
+  assertEquals(response.status, 502);
+  await response.text();
+  await flushBackground();
+  assertEquals(dumpStubs.stored.length, 1);
+  const meta = dumpStubs.stored[0]!.record.meta;
+  assertEquals(meta.ttftMs, null);
 });

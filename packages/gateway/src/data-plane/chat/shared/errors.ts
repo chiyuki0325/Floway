@@ -2,15 +2,19 @@ import type { ApiErrorResult, PerformanceTelemetryContext } from '@floway-dev/pr
 
 // Failures a chat protocol can render before reaching an upstream; unexpected
 // throws bubble as-is. `failedUpstreams` on model-{missing,unsupported}
-// carries the upstream names whose catalog fetch threw during this
-// resolution — surfaced parenthetically so the caller can tell a genuine
-// "no upstream has this model" miss from a transient outage where the
-// upstream that owns the model is currently unreachable. Empty means
-// every consulted upstream returned a catalog.
+// carries upstream names with a recorded catalog-refresh failure. The error
+// may predate this resolution and may accompany a usable last-known-good
+// catalog; empty means no consulted snapshot records such a failure.
 export type ChatServeFailure =
   | { readonly kind: 'model-missing'; readonly model: string; readonly failedUpstreams: readonly string[] }
   | { readonly kind: 'model-unsupported'; readonly model: string; readonly failedUpstreams: readonly string[] }
   | { readonly kind: 'routing-unavailable'; readonly message: string };
+
+export interface InputErrorDetails {
+  readonly message: string;
+  readonly param?: string;
+  readonly code?: string;
+}
 
 class ChatServeFailureError<TFailure extends { readonly kind: string }> extends Error {
   readonly failure: TFailure;
@@ -58,3 +62,11 @@ export const noViableCandidateFailure = (
   sawModel
     ? { kind: 'model-unsupported', model, failedUpstreams }
     : { kind: 'model-missing', model, failedUpstreams };
+
+export const inputErrorFields = (error: InputErrorDetails): Record<string, unknown> | undefined => {
+  const fields = {
+    ...(error.param === undefined ? {} : { param: error.param }),
+    ...(error.code === undefined ? {} : { code: error.code }),
+  };
+  return Object.keys(fields).length === 0 ? undefined : fields;
+};

@@ -19,7 +19,7 @@ export const analyzeGeminiGenerateContentAffinity = async (
   const locations: GeminiGenerateContentBlobLocation[] = [];
   for (const [contentIndex, content] of (payload.contents ?? []).entries()) {
     if (content.role !== 'model') continue;
-    for (const [partIndex, part] of content.parts.entries()) {
+    for (const [partIndex, part] of (content.parts ?? []).entries()) {
       if (typeof part.thoughtSignature !== 'string') continue;
       locations.push({ contentIndex, partIndex, decoded: await codec.unwrap(part.thoughtSignature, 'gemini-generate-content.part.thoughtSignature') });
     }
@@ -30,6 +30,7 @@ export const analyzeGeminiGenerateContentAffinity = async (
     return {
       kind: 'accepted',
       degrades: projections.some(item => item.projection.kind === 'remove' && item.projection.degrades),
+      preferred: projections.every(item => item.projection.preferred),
       materialize: () => {
         const candidatePayload = structuredClone(payload);
         if (candidatePayload.contents === undefined) return candidatePayload;
@@ -39,7 +40,7 @@ export const analyzeGeminiGenerateContentAffinity = async (
           const content = candidatePayload.contents[contentIndex];
           const replacements = new Map<number, GeminiGenerateContentPart | null>();
           for (const { location, projection } of contentProjections) {
-            const part = content.parts[location.partIndex];
+            const part = content.parts![location.partIndex];
             if (location.decoded.kind === 'foreign') continue;
             if (projection.kind === 'preserve') {
               replacements.set(location.partIndex, { ...part, thoughtSignature: projection.value });
@@ -49,7 +50,7 @@ export const analyzeGeminiGenerateContentAffinity = async (
               replacements.set(location.partIndex, hasPartContent(replacement) ? replacement : null);
             }
           }
-          content.parts = content.parts.flatMap((part, partIndex) => {
+          content.parts = content.parts!.flatMap((part, partIndex) => {
             const replacement = replacements.get(partIndex);
             return replacement === undefined ? [part] : replacement === null ? [] : [replacement];
           });

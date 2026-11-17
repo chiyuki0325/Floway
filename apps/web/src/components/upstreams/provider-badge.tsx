@@ -5,6 +5,7 @@ import { Link } from 'react-router';
 import azureIconUrl from '../../assets/azure-color.svg?no-inline';
 import claudeIconUrl from '../../assets/claude-color.svg?no-inline';
 import githubCopilotIconUrl from '../../assets/githubcopilot.svg?no-inline';
+import kimiIconUrl from '../../assets/kimi.svg?no-inline';
 import ollamaIconUrl from '../../assets/ollama.svg?no-inline';
 import openaiIconUrl from '../../assets/openai.svg?no-inline';
 import { fluentComponents } from '../../fluent';
@@ -15,20 +16,32 @@ import { useBadgeHue } from '../ui/badge-hue';
 import { Chip } from '../ui/chip';
 import { MaskedIcon } from '../ui/masked-icon';
 import { TruncationTooltip } from '../ui/truncation-tooltip';
-import type { UpstreamProviderKind } from '@floway-dev/provider/model';
+import type { UpstreamProviderKind } from '@floway-dev/provider/browser';
 
-const { Tooltip, makeStyles } = fluentComponents;
+const { Tooltip, makeStyles, mergeClasses } = fluentComponents;
 
 const providerLabels: Record<UpstreamProviderKind, string> = {
   custom: 'Custom',
   azure: 'Azure',
   copilot: 'Copilot',
-  codex: 'Codex',
+  chatgpt: 'ChatGPT',
   'claude-code': 'Claude Code',
+  'kimi-code': 'Kimi Code',
   ollama: 'Ollama',
 };
 
 const useStyles = makeStyles({
+  // 7px outer spacing and a 6px icon-label gap, counting the 1px outline.
+  // Fluent's native Tag distributes its icon and label padding asymmetrically.
+  // https://github.com/microsoft/fluentui/blob/4aa1084999a8c1ac7245724ad6c76210fe80acf6/packages/react-components/react-tags/library/src/components/Tag/useTagStyles.styles.ts
+  badge: {
+    display: 'inline-flex',
+    columnGap: '6px',
+    paddingLeft: '6px',
+    paddingRight: '6px',
+    '& .fui-Tag__icon': { padding: 0, margin: 0, flexShrink: 0 },
+    '& .fui-Tag__primaryText': { paddingLeft: 0, paddingRight: 0 },
+  },
   // A mask over a background-color disappears under forced colours; opting the
   // mask box out keeps the `currentColor` the chip already resolved.
   // https://drafts.csswg.org/css-color-adjust-1/#forced-colors-properties
@@ -56,12 +69,13 @@ export function ProviderBadge({ label, title, to, upstream }: {
   upstream: { hue: number; kind: UpstreamProviderKind };
 }) {
   const { t } = useTranslation();
+  const styles = useStyles();
   const hue = useBadgeHue(hueBadgeTone(upstream.hue));
   const visibleLabel = label ?? t(`provider.${upstream.kind}`, providerLabel(upstream.kind));
 
   const chip = (measureRef?: RefCallback<HTMLElement>) => (
     <Chip
-      className={hue.className}
+      className={mergeClasses(hue.className, styles.badge)}
       style={hue.style}
       icon={<ProviderIcon kind={upstream.kind} className="h-4 w-4" />}
       textRef={measureRef}
@@ -96,23 +110,24 @@ export function ProviderBadge({ label, title, to, upstream }: {
 // `?no-inline` because Vite inlines an asset under 4 KB as a data URI, and an
 // unquoted `url(data:image/svg+xml,<svg …>)` is not a valid CSS value — the
 // mask-image declaration is dropped and the mask box paints as a solid block.
-// https://github.com/vitejs/vite/blob/5e7fe129a4dde4f41934083b25e490059985f4e6/docs/guide/assets.md#explicit-url-imports
+// https://github.com/vitejs/vite/blob/5e7fe129a4dde4f41934083b25e490059985f4e6/docs/guide/assets.md#explicit-inline-handling
 const providerIconUrls: Record<Exclude<UpstreamProviderKind, 'custom'>, string> = {
   azure: azureIconUrl,
   copilot: githubCopilotIconUrl,
-  // Codex is the ChatGPT subscription, so it wears OpenAI's mark.
-  codex: openaiIconUrl,
+  chatgpt: openaiIconUrl,
   'claude-code': claudeIconUrl,
+  'kimi-code': kimiIconUrl,
   ollama: ollamaIconUrl,
 };
 
-// The source SVGs share a 24×24 viewBox but not optical weight; these scales
-// normalize each silhouette to ServerRegular's 16px height inside a 20px box.
+// Normalize silhouettes with different viewBoxes and optical weights to
+// ServerRegular's 16px height inside a 20px box.
 const providerIconMaskSizes: Record<Exclude<UpstreamProviderKind, 'custom'>, string> = {
   azure: '85% 85%',
   copilot: '100% 100%',
-  codex: '80% 80%',
+  chatgpt: '80% 80%',
   'claude-code': '80% 80%',
+  'kimi-code': '85% 85%',
   ollama: '86% 86%',
 };
 

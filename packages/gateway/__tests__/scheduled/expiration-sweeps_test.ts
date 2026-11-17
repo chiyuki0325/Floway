@@ -24,6 +24,7 @@ const key = (now: number): ApiKey => ({
   serverSecret: '55'.repeat(32),
   createdAt: new Date(now).toISOString(),
   upstreamIds: null,
+  randomizeUpstreams: false,
   deletedAt: null,
   dumpRetentionSeconds: 3600,
   openaiResponsesRetentionSeconds: OPENAI_RESPONSES_RETENTION_SECONDS,
@@ -306,9 +307,18 @@ test('expiration backfill rejects malformed legacy dump descriptors with row con
        VALUES (?, ?, ?, NULL, '{}', '[]', NULL, ?, NULL)`,
       ['key-legacy', recordId, 1_000, JSON.stringify({ key: 'dumps/v1/key-legacy/old.req.gz', type: 'chunks' })],
     );
-    const migration = migrationSqlByFilename.find(([filename]) => filename === '0066_expiration_sweeps.sql');
-    if (migration === undefined) throw new Error('missing migration 0066_expiration_sweeps.sql');
-    db.run(migration[1]);
+    // Run 0066 and every migration after it so the schema reaches the present
+    // (incl. columns like `response_upstream_body_descriptor` that the backfill
+    // SQL selects). The malformed descriptor was seeded before the validate
+    // trigger existed, so it survives the migration run.
+    let started = false;
+    for (const [filename, sql] of migrationSqlByFilename) {
+      if (!started) {
+        if (filename === '0066_expiration_sweeps.sql') started = true;
+        else continue;
+      }
+      db.run(sql);
+    }
 
     const repo = new SqlRepo(wrapSqlJsDatabase(db));
     await expect(repo.expirationSweeps.backfillCleanupTracking(500)).rejects.toThrow(
@@ -384,9 +394,13 @@ test('bounded cleanup backfill tracks rows whose API key was hard-deleted', asyn
       if (filename === '0082_expiration_sweep_integrity.sql') break;
       raw.run(sql);
     }
+    raw.run(
+      `INSERT INTO api_keys
+       (id, user_id, name, key, created_at, upstream_ids, deleted_at, dump_retention_seconds, server_secret, responses_retention_seconds)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['key-a', 1, 'Sweep key', 'raw-sweep-key', new Date(now).toISOString(), null, null, 3600, '55'.repeat(32), OPENAI_RESPONSES_RETENTION_SECONDS],
+    );
     const db = wrapSqlJsDatabase(raw);
-    const repo = new SqlRepo(db);
-    await repo.apiKeys.save(key(now));
     const recordId = '01K00000000000000000ORPH';
     const fileKey = `dumps/v1/key-a/1970010100/${recordId}.req.gz`;
     await db.prepare(
@@ -397,7 +411,19 @@ test('bounded cleanup backfill tracks rows whose API key was hard-deleted', asyn
     await db.prepare("DELETE FROM api_keys WHERE id = 'key-a'").run();
     await db.prepare("DELETE FROM expiration_sweeps WHERE key_id = 'key-a'").run();
     await db.prepare('DELETE FROM spilled_files WHERE file_key = ?').bind(fileKey).run();
+    // Run 0082 and every migration after it so the backfill SQL finds the
+    // columns later migrations added (e.g. the upstream body descriptor from
+    // 0089). The orphan row was seeded before the validate trigger existed.
+    let started = false;
+    for (const [filename, sql] of migrationSqlByFilename) {
+      if (!started) {
+        if (filename === '0082_expiration_sweep_integrity.sql') started = true;
+        else continue;
+      }
+      raw.run(sql);
+    }
 
+    const repo = new SqlRepo(db);
     await repo.expirationSweeps.backfillCleanupTracking(500);
     expect(await db.prepare(
       "SELECT due_at FROM expiration_sweeps WHERE domain = 'dumps' AND key_id = 'key-a'",

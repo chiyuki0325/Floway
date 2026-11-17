@@ -1,11 +1,11 @@
-import { ProhibitedRegular, ShieldKeyhole24Regular } from '@fluentui/react-icons';
+import { ShieldKeyhole24Regular } from '@fluentui/react-icons';
 import { useCallback, useId, useMemo } from 'react';
 
 import { ProviderBadge } from './provider-badge';
 import type { ControlPlaneModel, UpstreamOption } from '../../api/types';
 import { fluentComponents } from '../../fluent';
 import { useTranslation } from '../../i18n/translation';
-import { ReorderButtons } from '../ui/reorder-buttons';
+import { moveItem, ReorderHandle, type ReorderList, useReorderList } from '../ui/reorder-list';
 import { ScrollArea } from '../ui/scroll-area';
 import { SettingsExpander, SettingsSwitch } from '../ui/settings-card';
 import { TableColumns } from '../ui/table-columns';
@@ -29,8 +29,8 @@ interface UpstreamAccessRow {
   modelCount: number | null;
   name: string;
   selected: boolean;
+  unavailable: boolean;
   upstream: { hue: number; kind: UpstreamOption['kind'] };
-  upstreamEnabled: boolean;
 }
 
 export function UpstreamAccessControl({
@@ -62,15 +62,14 @@ export function UpstreamAccessControl({
     onChange({ override: true, ids: nextIds });
   }, [ids, onChange]);
 
-  const moveUpstream = useCallback((id: string, direction: -1 | 1) => {
-    const index = ids.indexOf(id);
-    const nextIndex = index + direction;
-    if (index === -1 || nextIndex < 0 || nextIndex >= ids.length) return;
-    const next = [...ids];
-    const [moved] = next.splice(index, 1);
-    next.splice(nextIndex, 0, moved);
-    onChange({ override: true, ids: next });
+  const moveUpstream = useCallback((from: number, to: number) => {
+    onChange({ override: true, ids: moveItem(ids, from, to) });
   }, [ids, onChange]);
+
+  // Only the selected rows carry an order, and the table puts them first, so
+  // the orderable list is the head of it. An unselected row has no place in the
+  // cap and answers with the index none of them has.
+  const reorder = useReorderList({ disabled: disabled || !override, length: ids.length, onReorder: moveUpstream });
 
   return <section className="grid gap-3 min-w-0" aria-describedby={emptySelection ? warningId : undefined}>
     <SettingsExpander
@@ -81,37 +80,23 @@ export function UpstreamAccessControl({
         onChange={toggleOverride}
       />}
       description={t('dashboard.upstreamAccess.description')}
+      disclosureDisabled={!override}
       header={t('dashboard.upstreamAccess.title')}
       icon={<ShieldKeyhole24Regular />}
       toggledOn={override}
     >
       <div className="grid gap-3 min-w-0">
         <ScrollArea axes="horizontal" className="min-w-0">
-          {/* The minimum only decides when the region starts scrolling: the
-              three sized columns plus enough room for a provider chip to stay
-              readable. */}
-          <Table aria-label={t('dashboard.upstreamAccess.tableLabel')} className="min-w-[440px]">
-            <TableColumns widths={['80px', '96px', null, '120px']} />
+          <Table aria-label={t('dashboard.upstreamAccess.tableLabel')} className="min-w-[344px] whitespace-nowrap" style={{ tableLayout: 'auto' }}>
+            <TableColumns widths={['80px', '100%', null]} />
             <TableHeader><TableRow>
               <TableHeaderCell>{t('dashboard.upstreamAccess.enabled')}</TableHeaderCell>
-              <TableHeaderCell>{t('dashboard.upstreamAccess.order')}</TableHeaderCell>
               <TableHeaderCell>{t('dashboard.upstreamAccess.upstream')}</TableHeaderCell>
               <TableHeaderCell>{t('dashboard.upstreamAccess.models')}</TableHeaderCell>
             </TableRow></TableHeader>
-            <TableBody>{rows.map(row => {
-              const index = ids.indexOf(row.id);
-              return <TableRow key={row.id}>
-                <TableCell><Checkbox aria-label={`${t('dashboard.upstreamAccess.enabled')}: ${row.name}`} checked={row.selected} disabled={disabled || !override} onChange={(_, data) => toggleUpstream(row.id, !!data.checked)} /></TableCell>
-                <TableCell><div className="inline-flex items-center gap-1"><ReorderButtons disabled={disabled || !override} downLabel={t('dashboard.upstreams.actions.moveDown', { name: row.name })} isFirst={index <= 0} isLast={index === -1 || index >= ids.length - 1} onMove={direction => moveUpstream(row.id, direction)} upLabel={t('dashboard.upstreams.actions.moveUp', { name: row.name })} /></div></TableCell>
-                <TableCell><ProviderBadge label={row.name} upstream={row.upstream} /></TableCell>
-                <TableCell><span className="inline-flex items-center gap-1.5 min-w-0">
-                  {!row.upstreamEnabled && <ProhibitedRegular className="block flex-none text-fui-fg2" aria-label={t('dashboard.upstreamAccess.upstreamDisabled')} />}
-                  {row.modelCount === null
-                    ? t('dashboard.upstreamAccess.modelCountUnknown')
-                    : t('dashboard.upstreamAccess.modelCount', { count: row.modelCount })}
-                </span></TableCell>
-              </TableRow>;
-            })}</TableBody>
+            <TableBody {...reorder.listProps()}>
+              {rows.map(row => <AccessRow disabled={disabled || !override} index={ids.indexOf(row.id)} key={row.id} onToggle={toggleUpstream} reorder={reorder} row={row} />)}
+            </TableBody>
           </Table>
         </ScrollArea>
       </div>
@@ -120,6 +105,35 @@ export function UpstreamAccessControl({
       <MessageBarBody>{t('dashboard.upstreamAccess.emptyWarning')}</MessageBarBody>
     </MessageBar>}
   </section>;
+}
+
+// An index outside the cap is a row the cap does not order: it renders the same
+// grip, dead, beside its checkbox so the enabled column keeps one shape.
+function AccessRow({ disabled, index, onToggle, reorder, row }: {
+  disabled: boolean;
+  index: number;
+  onToggle: (id: string, enabled: boolean) => void;
+  reorder: ReorderList;
+  row: UpstreamAccessRow;
+}) {
+  const { t } = useTranslation();
+  return <TableRow {...(index < 0 ? {} : reorder.itemProps(index))}>
+    <TableCell><div className="inline-flex items-center gap-1">
+      <Checkbox
+        aria-label={`${t('dashboard.upstreamAccess.enabled')}: ${row.name}`}
+        checked={row.selected}
+        disabled={disabled}
+        onChange={(_, data) => onToggle(row.id, !!data.checked)}
+      />
+      <ReorderHandle {...reorder.handleProps(index)} label={t('dashboard.upstreams.actions.reorder', { name: row.name })} />
+    </div></TableCell>
+    <TableCell><ProviderBadge label={row.name} upstream={row.upstream} /></TableCell>
+    <TableCell><span className="whitespace-nowrap tabular-nums">
+      {row.modelCount === null
+        ? t('dashboard.upstreamAccess.modelCountUnknown')
+        : t('dashboard.upstreamAccess.modelCount', { count: row.modelCount })}
+    </span></TableCell>
+  </TableRow>;
 }
 
 const accessRows = (
@@ -142,16 +156,23 @@ const accessRows = (
     modelCount: upstream.enabled ? (modelCounts.get(upstream.id) ?? 0) : upstream.cachedModelCount,
     name: upstream.name,
     selected: isSelected,
+    unavailable: false,
     upstream: { hue: upstream.hue, kind: upstream.kind },
-    upstreamEnabled: upstream.enabled,
   });
-  // Selected first, in the order the cap states, then the rest. An id absent
-  // from `available` has none: the control plane serves a cap already projected
-  // through what the principal can reach, so every id here resolves.
+  // Selected first, in the order the cap states, then the rest. A saved id
+  // that is no longer in the caller's addressable surface stays visible so the
+  // owner can remove or reorder it instead of silently persisting a hidden cap.
   return [
-    ...ids.flatMap(id => {
+    ...ids.flatMap((id): UpstreamAccessRow[] => {
       const upstream = byId.get(id);
-      return upstream ? [rowFor(upstream, true)] : [];
+      return upstream ? [rowFor(upstream, true)] : [{
+        id,
+        modelCount: null,
+        name: id,
+        selected: true,
+        unavailable: true,
+        upstream: { hue: 0, kind: 'custom' },
+      }];
     }),
     ...available.filter(upstream => !selected.has(upstream.id)).map(upstream => rowFor(upstream, false)),
   ];

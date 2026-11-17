@@ -1,11 +1,20 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
-import { clearInFlightForTesting } from '../../../src/data-plane/providers/models-cache.ts';
 import { listModelProviders } from '../../../src/data-plane/providers/registry.ts';
-import { enumerateModelCandidates, enumerateRealModelCandidates } from '../../../src/data-plane/providers/resolution.ts';
-import { buildCustomUpstreamRecord, copilotModels, setupAppTest } from '../../test-utils/app.ts';
+import { enumerateModelCandidates as enumerateModelCandidatesRaw, enumerateRealModelCandidates as enumerateRealModelCandidatesRaw } from '../../../src/data-plane/providers/resolution.ts';
+import { createModelsRefreshScheduler, modelsRefreshTarget, refreshModelsExplicit } from '../../../src/execution/models-refresh.ts';
+import { saveUpstreamForTest } from '../../repo/upstreams.ts';
+import { buildCustomUpstreamRecord, setupAppTest, testAdminUser, warmModelsForTest } from '../../test-utils/app.ts';
 import { directFetcher, type InternalModel, type ProviderModel } from '@floway-dev/provider';
-import { assertEquals, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
+import { assertEquals, jsonResponse, withMockedFetch as withMockedFetchRaw } from '@floway-dev/test-utils';
+
+const withMockedFetch = <T>(
+  handler: Parameters<typeof withMockedFetchRaw>[0],
+  fn: () => Promise<T>,
+): Promise<T> => withMockedFetchRaw(handler, async () => {
+  await warmModelsForTest();
+  return await fn();
+});
 
 const realProviderModels = (model: InternalModel | undefined): Record<string, ProviderModel> => {
   if (model?.providerModels === undefined) throw new Error(`expected real InternalModel with providerModels, got ${JSON.stringify(model)}`);
@@ -15,144 +24,96 @@ const realProviderModels = (model: InternalModel | undefined): Record<string, Pr
 const testScheduler = (promise: Promise<unknown>): void => {
   promise.catch(err => console.error('[background]', err));
 };
+const scheduleRefresh = createModelsRefreshScheduler('TEST', testScheduler);
+const enumerateModelCandidates = (
+  input: Omit<Parameters<typeof enumerateModelCandidatesRaw>[0], 'subject'>,
+) => enumerateModelCandidatesRaw({ subject: testAdminUser, ...input });
+const enumerateRealModelCandidates = (
+  ...args: Parameters<typeof enumerateRealModelCandidatesRaw> extends [unknown, ...infer Rest] ? Rest : never
+) => enumerateRealModelCandidatesRaw(testAdminUser, ...args);
 
-test('enumerateModelCandidates strips an -YYYYMMDD suffix when nothing matched and retries across every visible upstream', async () => {
+test('a cold candidate read schedules refresh without waiting for upstream I/O', async () => {
   const { repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord());
+  const background: Promise<unknown>[] = [];
+  let releaseFetch: ((response: Response) => void) | undefined;
+  const fetch = vi.fn(() => new Promise<Response>(resolve => { releaseFetch = resolve; }));
 
-  await repo.upstreams.save(
-    buildCustomUpstreamRecord({
-      config: {
-        baseUrl: 'https://custom.example.com',
-        authStyle: 'bearer',
-        ingressHeadersRules: [],
-        apiKey: 'sk-custom',
-        endpoints: { anthropicMessages: {} },
-      },
-    }),
+  await withMockedFetchRaw(
+    fetch,
+    async () => {
+      const result = await enumerateModelCandidates({
+        upstreamIds: null,
+        randomizeUpstreams: false,
+        model: 'eventual-model',
+        kind: 'chat',
+        scheduler: promise => { background.push(promise); },
+        runtimeLocation: 'TEST',
+      });
+      expect(result.candidates).toEqual([]);
+      expect(background).toHaveLength(1);
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      releaseFetch!(jsonResponse({ object: 'list', data: [{ id: 'eventual-model' }] }));
+      await Promise.all(background);
+    },
   );
 
+  expect(fetch).toHaveBeenCalledOnce();
+  expect((await repo.upstreams.getById('up_custom'))?.modelsCache).toMatchObject({
+    lastError: null,
+    models: [{ id: 'eventual-model' }],
+  });
+});
+
+test('enumerateModelCandidates shares one upstream snapshot across providers and dialers', async () => {
+  const { repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord());
+
   await withMockedFetch(
-    request => {
-      const url = new URL(request.url);
-
-      if (url.hostname === 'update.code.visualstudio.com') {
-        return jsonResponse(['1.110.1']);
-      }
-      if (url.pathname === '/copilot_internal/v2/token') {
-        return jsonResponse({
-          token: 'copilot-access-token',
-          expires_at: 4102444800,
-          refresh_in: 3600,
-          endpoints: { api: 'https://api.individual.githubcopilot.com' },
-        });
-      }
-      if (url.hostname === 'api.individual.githubcopilot.com' && url.pathname === '/models') {
-        return jsonResponse(copilotModels([{ id: 'claude-opus-4.7', supported_endpoints: ['/v1/messages'] }]));
-      }
-      if (url.hostname === 'custom.example.com' && url.pathname === '/v1/models') {
-        return jsonResponse({
-          object: 'list',
-          data: [{ id: 'claude-opus-4-7' }],
-        });
-      }
-
-      throw new Error(`Unhandled fetch ${request.url}`);
-    },
+    () => jsonResponse({ object: 'list', data: [{ id: 'shared-model' }] }),
     async () => {
-      const resolved = await enumerateModelCandidates({ upstreamIds: null, model: 'claude-opus-4-7-20300101', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
+      const list = vi.spyOn(repo.upstreams, 'list');
+      const resolved = await enumerateModelCandidates({
+        upstreamIds: null,
+        randomizeUpstreams: false,
+        model: 'shared-model',
+        kind: 'chat',
+        scheduler: testScheduler,
+        runtimeLocation: 'TEST',
+      });
 
-      // No upstream's catalog literally lists `claude-opus-4-7-20300101`,
-      // so the resolver retries against the stripped `claude-opus-4-7`,
-      // which both upstreams expose. Both candidates end up in the match
-      // list in configured `sort_order`.
-      assertEquals(resolved.candidates.map(m => m.provider.upstreamId).sort(), ['up_copilot', 'up_custom'].sort());
-      assertEquals(resolved.candidates.map(m => m.model.id), ['claude-opus-4-7', 'claude-opus-4-7']);
+      expect(list).toHaveBeenCalledOnce();
+      assertEquals(resolved.candidates.map(candidate => candidate.model.id), ['shared-model']);
     },
   );
 });
 
-test('enumerateModelCandidates does not retry when the inbound id has no dated suffix', async () => {
+test('scheduler registration failures propagate rather than looking like an upstream model-list failure', async () => {
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
-  await repo.upstreams.save(
-    buildCustomUpstreamRecord({
-      config: {
-        baseUrl: 'https://custom.example.com',
-        authStyle: 'bearer',
-        ingressHeadersRules: [],
-        apiKey: 'sk-custom',
-        endpoints: { anthropicMessages: {} },
-      },
-    }),
-  );
-
-  await withMockedFetch(
-    request => {
-      const url = new URL(request.url);
-      if (url.hostname === 'custom.example.com' && url.pathname === '/v1/models') {
-        return jsonResponse({ object: 'list', data: [{ id: 'claude-opus-4-7' }] });
-      }
-      throw new Error(`Unhandled fetch ${request.url}`);
-    },
-    async () => {
-      // Plain typo / unknown id — no dated suffix, no retry.
-      const resolved = await enumerateModelCandidates({ upstreamIds: null, model: 'claude-opus-4-7-unknown', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
-      assertEquals(resolved.candidates.length, 0);
-    },
-  );
-});
-
-test('enumerateModelCandidates prefers the literal dated id over the stripped base when the catalog lists both', async () => {
-  // The dated-suffix retry is a SECOND attempt, gated on the first
-  // attempt finding nothing. When the upstream catalog already lists the
-  // dated id verbatim, the first attempt wins and the stripped form
-  // never enters the candidate list.
-  const { repo } = await setupAppTest();
-  await repo.upstreams.deleteAll();
-  await repo.upstreams.save(
-    buildCustomUpstreamRecord({
-      config: {
-        baseUrl: 'https://custom.example.com',
-        authStyle: 'bearer',
-        ingressHeadersRules: [],
-        apiKey: 'sk-custom',
-        endpoints: { anthropicMessages: {} },
-      },
-    }),
-  );
-
-  await withMockedFetch(
-    request => {
-      const url = new URL(request.url);
-      if (url.hostname === 'custom.example.com' && url.pathname === '/v1/models') {
-        return jsonResponse({
-          object: 'list',
-          data: [
-            { id: 'claude-sonnet-4-5' },
-            { id: 'claude-sonnet-4-5-20251101' },
-          ],
-        });
-      }
-      throw new Error(`Unhandled fetch ${request.url}`);
-    },
-    async () => {
-      const resolved = await enumerateModelCandidates({ upstreamIds: null, model: 'claude-sonnet-4-5-20251101', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
-      assertEquals(resolved.candidates.length, 1);
-      assertEquals(resolved.candidates[0]?.model.id, 'claude-sonnet-4-5-20251101');
-    },
-  );
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
+    config: { baseUrl: 'https://custom.example.com', authStyle: 'none', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [], modelsFetch: { enabled: false }, models: [] },
+  }));
+  const providers = await listModelProviders(null);
+  await expect(enumerateRealModelCandidates('model', 'chat', providers, {
+    fetcherForUpstream: () => directFetcher,
+    randomizeUpstreams: false,
+    scheduleRefresh: () => { throw new Error('scheduler unavailable'); },
+  })).rejects.toThrow('scheduler unavailable');
 });
 
 test('enumerateRealModelCandidates only loads the selected providers\' catalogs', async () => {
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_first',
     name: 'First',
     sortOrder: 0,
     config: { baseUrl: 'https://first.example.com', authStyle: 'bearer', apiKey: 'sk-first', endpoints: { openaiResponses: {} }, ingressHeadersRules: [] },
   }));
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_second',
     name: 'Second',
     sortOrder: 100,
@@ -162,7 +123,7 @@ test('enumerateRealModelCandidates only loads the selected providers\' catalogs'
   const providers = await listModelProviders(null);
   let secondModelsFetches = 0;
 
-  await withMockedFetch(
+  await withMockedFetchRaw(
     request => {
       const url = new URL(request.url);
       if (url.hostname === 'first.example.com' && url.pathname === '/v1/models') {
@@ -175,10 +136,16 @@ test('enumerateRealModelCandidates only loads the selected providers\' catalogs'
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const { candidates } = await enumerateRealModelCandidates('target-model', 'chat', [providers[0]], () => directFetcher, testScheduler);
+      const first = await repo.upstreams.getById(providers[0].upstreamId);
+      if (first === null) throw new Error('first upstream missing');
+      await refreshModelsExplicit(modelsRefreshTarget(first), 'TEST');
+      const warmed = (await listModelProviders(null)).find(provider => provider.upstreamId === 'up_first');
+      if (!warmed) throw new Error('warmed provider missing');
+      const { candidates } = await enumerateRealModelCandidates('target-model', 'chat', [warmed], { fetcherForUpstream: () => directFetcher, randomizeUpstreams: false, scheduleRefresh });
 
       assertEquals(candidates[0]?.model.id, 'target-model');
       assertEquals(candidates[0]?.provider.upstreamId, 'up_first');
+      expect(candidates[0]?.fetcher).toBe(directFetcher);
       // Every enumerated candidate seeds `providerModels[provider.upstreamId]`
       // so `providerModelOf(candidate)` resolves at dispatch time.
       assertEquals(Object.keys(realProviderModels(candidates[0]?.model)), ['up_first']);
@@ -191,11 +158,12 @@ test('enumerateRealModelCandidates only loads the selected providers\' catalogs'
 test('enumerateRealModelCandidates rejects a model id disabled on that upstream (filter parity with the catalog)', async () => {
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
-  await repo.upstreams.save({
+  await saveUpstreamForTest(repo.upstreams, {
     id: 'up_x',
     kind: 'azure',
     name: 'X',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 1,
     createdAt: '2026-05-21T00:00:00.000Z',
     updatedAt: '2026-05-21T00:00:00.000Z',
@@ -216,29 +184,101 @@ test('enumerateRealModelCandidates rejects a model id disabled on that upstream 
     state: null,
   });
 
+  await warmModelsForTest();
   const providers = await listModelProviders(null);
-  const enabled = await enumerateRealModelCandidates('enabled-model', 'chat', providers, () => directFetcher, testScheduler);
-  const disabled = await enumerateRealModelCandidates('disabled-model', 'chat', providers, () => directFetcher, testScheduler);
+  const enabled = await enumerateRealModelCandidates('enabled-model', 'chat', providers, { fetcherForUpstream: () => directFetcher, randomizeUpstreams: false, scheduleRefresh });
+  const disabled = await enumerateRealModelCandidates('disabled-model', 'chat', providers, { fetcherForUpstream: () => directFetcher, randomizeUpstreams: false, scheduleRefresh });
   assertEquals(enabled.candidates[0]?.model.id, 'enabled-model');
   assertEquals(disabled.candidates.length, 0);
 });
 
-// Regression: when an upstream's force re-fetch rejects past HARD, the call
-// site asking for a model belonging to one of the *healthy* upstreams must
-// still resolve. The broken upstream's display name flows back via
-// `failedUpstreams` so the eventual error renderer can mention it.
+test('randomizes upstream candidate groups without splitting or reordering a group', async () => {
+  const { repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  for (const [id, name, sortOrder] of [['up_a', 'A', 1], ['up_b', 'B', 2]] as const) {
+    await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
+      id,
+      name,
+      sortOrder,
+      config: { baseUrl: `https://${name.toLowerCase()}.example.com`, authStyle: 'bearer', apiKey: `sk-${name.toLowerCase()}`, endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [] },
+      modelPrefix: { prefix: 'or/', addressable: ['unprefixed', 'prefixed'], listed: ['unprefixed', 'prefixed'] },
+    }));
+  }
+
+  await withMockedFetch(
+    request => {
+      const hostname = new URL(request.url).hostname;
+      if (hostname === 'a.example.com' || hostname === 'b.example.com') {
+        return jsonResponse({ object: 'list', data: [{ id: 'or/gpt-4o' }, { id: 'gpt-4o' }] });
+      }
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => {
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+      try {
+        const resolved = await enumerateModelCandidates({
+          upstreamIds: null,
+          randomizeUpstreams: true,
+          model: 'or/gpt-4o',
+          kind: 'chat',
+          scheduler: testScheduler,
+          runtimeLocation: 'TEST',
+        });
+        assertEquals(
+          resolved.candidates.map(candidate => `${candidate.model.id}@${candidate.provider.upstreamId}`),
+          ['or/gpt-4o@up_b', 'gpt-4o@up_b', 'or/gpt-4o@up_a', 'gpt-4o@up_a'],
+        );
+        expect(random).toHaveBeenCalledOnce();
+      } finally {
+        random.mockRestore();
+      }
+    },
+  );
+});
+
+test('a recorded refresh failure is irrelevant when the prefix policy cannot address the model id', async () => {
+  const { repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
+    id: 'up_prefixed_failure',
+    name: 'Prefixed failure',
+    modelPrefix: { prefix: 'tenant/', addressable: ['prefixed'], listed: ['prefixed'] },
+    config: { baseUrl: 'https://prefixed-failure.example.com', authStyle: 'bearer', apiKey: 'sk-x', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [] },
+  }));
+
+  await withMockedFetch(
+    request => {
+      if (new URL(request.url).hostname === 'prefixed-failure.example.com') return jsonResponse({ error: 'down' }, 502);
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => {
+      const resolved = await enumerateModelCandidates({
+        upstreamIds: null,
+        randomizeUpstreams: false,
+        model: 'unprefixed-model',
+        kind: 'chat',
+        scheduler: testScheduler,
+        runtimeLocation: 'TEST',
+      });
+      expect(resolved.failedUpstreams).toEqual([]);
+    },
+  );
+});
+
+// A persisted refresh error must not hide healthy siblings. The broken
+// upstream's display name flows back via `failedUpstreams` while its empty
+// or last-known-good snapshot stays independent of the current request.
 test('enumerateModelCandidates: healthy upstream still resolves alongside a rejecting one, with failedUpstreams reported', async () => {
-  clearInFlightForTesting();
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
 
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_broken',
     name: 'Broken upstream',
     sortOrder: 1,
     config: { baseUrl: 'https://broken.example.com', authStyle: 'bearer', apiKey: 'sk-x', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [] },
   }));
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_ok',
     name: 'Healthy upstream',
     sortOrder: 2,
@@ -257,7 +297,7 @@ test('enumerateModelCandidates: healthy upstream still resolves alongside a reje
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      const resolvedExisting = await enumerateModelCandidates({ upstreamIds: null, model: 'ok-model', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
+      const resolvedExisting = await enumerateModelCandidates({ upstreamIds: null, randomizeUpstreams: false, model: 'ok-model', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
       assertEquals(resolvedExisting.candidates.map(m => m.provider.upstreamId), ['up_ok']);
       assertEquals(resolvedExisting.candidates[0]?.model.id, 'ok-model');
       assertEquals(resolvedExisting.failedUpstreams, ['Broken upstream']);
@@ -266,24 +306,56 @@ test('enumerateModelCandidates: healthy upstream still resolves alongside a reje
       // upstream's catalog error — the caller's failure renderer is the right
       // place to surface that, parenthetically, alongside the model-missing
       // body.
-      const resolvedMissing = await enumerateModelCandidates({ upstreamIds: null, model: 'unknown-model', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
+      const resolvedMissing = await enumerateModelCandidates({ upstreamIds: null, randomizeUpstreams: false, model: 'unknown-model', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST' });
       assertEquals(resolvedMissing.candidates.length, 0);
       assertEquals(resolvedMissing.failedUpstreams, ['Broken upstream']);
     },
   );
 });
 
-// A wrong-kind match (`sawAnyId=true, candidates=[]`) must short-circuit the
-// dated-suffix retry — the suffix strip cannot turn a wrong-kind id into a
-// right-kind one. The catalog carries the literal dated id as a chat model;
-// requesting it with `kind: 'image'` produces sawAnyId=true on the first
-// attempt, so the resolver returns immediately rather than walking the
-// stripped form.
-test('enumerateModelCandidates does NOT trigger the dated-suffix retry on a wrong-kind sawAnyId match', async () => {
-  clearInFlightForTesting();
+// Resolution is a single catalog exact-match. A client that pins a vendor release
+// date (`claude-opus-4-7-20251231`) addresses an id no upstream publishes, and
+// that must surface as model-missing instead of silently retrying the bare id.
+test('enumerateModelCandidates does not strip a -YYYYMMDD suffix the catalog does not list', async () => {
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
+    id: 'up_dated',
+    name: 'Dated',
+    sortOrder: 1,
+    config: { baseUrl: 'https://dated.example.com', authStyle: 'bearer', apiKey: 'sk-x', endpoints: { anthropicMessages: {} }, ingressHeadersRules: [] },
+  }));
+
+  await withMockedFetch(
+    request => {
+      const url = new URL(request.url);
+      if (url.hostname === 'dated.example.com' && url.pathname === '/v1/models') {
+        return jsonResponse({ object: 'list', data: [{ id: 'claude-opus-4-7' }] });
+      }
+      throw new Error(`Unhandled fetch ${request.url}`);
+    },
+    async () => {
+      const resolved = await enumerateModelCandidates({
+        upstreamIds: null,
+        randomizeUpstreams: false,
+        model: 'claude-opus-4-7-20251231',
+        kind: 'chat',
+        scheduler: testScheduler,
+        runtimeLocation: 'TEST',
+      });
+      assertEquals(resolved.candidates, []);
+      assertEquals(resolved.sawModel, false);
+    },
+  );
+});
+
+// A wrong-kind match yields `sawModel=true, candidates=[]`: the id is known to
+// the upstream but under a different kind, which the failure renderer surfaces
+// as "model unsupported" rather than "model missing".
+test('enumerateModelCandidates reports sawModel for a wrong-kind catalog match', async () => {
+  const { repo } = await setupAppTest();
+  await repo.upstreams.deleteAll();
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_chat_only',
     name: 'ChatOnly',
     sortOrder: 1,
@@ -302,71 +374,23 @@ test('enumerateModelCandidates does NOT trigger the dated-suffix retry on a wron
     async () => {
       const resolved = await enumerateModelCandidates({
         upstreamIds: null,
+        randomizeUpstreams: false,
         model: 'claude-opus-4-7-20251231',
         kind: 'image',
         scheduler: testScheduler,
         runtimeLocation: 'TEST',
       });
       assertEquals(resolved.candidates, []);
-      // `sawModel: true` pins that only the first attempt ran: the resolver
-      // assigns `sawModel: second.sawAnyId` after retry (overwrite, not OR),
-      // so a second walk against the stripped `claude-opus-4-7` (absent from
-      // this fixture's catalog) would flip sawModel to false.
       assertEquals(resolved.sawModel, true);
       assertEquals(resolved.failedUpstreams, []);
     },
   );
 });
 
-// failedUpstreams across the two retry attempts must dedupe: a single broken
-// upstream that rejects both walks reports its name once, not twice.
-test('enumerateModelCandidates deduplicates failedUpstreams across the dated-suffix retry attempts', async () => {
-  clearInFlightForTesting();
+test('an AbortError from background catalog refresh does not abort model resolution', async () => {
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
-  await repo.upstreams.save(buildCustomUpstreamRecord({
-    id: 'up_broken',
-    name: 'Broken',
-    sortOrder: 1,
-    config: { baseUrl: 'https://broken.example.com', authStyle: 'bearer', apiKey: 'sk-x', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [] },
-  }));
-
-  await withMockedFetch(
-    request => {
-      const url = new URL(request.url);
-      if (url.hostname === 'broken.example.com' && url.pathname === '/v1/models') {
-        return jsonResponse({ error: 'upstream went down' }, 502);
-      }
-      throw new Error(`Unhandled fetch ${request.url}`);
-    },
-    async () => {
-      const resolved = await enumerateModelCandidates({
-        upstreamIds: null,
-        model: 'claude-opus-4-7-20251231',
-        kind: 'chat',
-        scheduler: testScheduler,
-        runtimeLocation: 'TEST',
-      });
-      assertEquals(resolved.candidates.length, 0);
-      // The same broken upstream appears in both attempts' failedUpstreams;
-      // the outer resolver collapses the duplicate via a Set.
-      assertEquals(resolved.failedUpstreams.length, 1);
-      assertEquals(resolved.failedUpstreams[0], 'Broken');
-    },
-  );
-});
-
-// AbortError must propagate end-to-end so the caller's per-request abort
-// signal cannot be masked by a slow upstream. Burying it in failedUpstreams
-// would let the rest of the data-plane request build a Response against a
-// stale catalog. The provider's `fetchUpstreamModels` wraps the upstream
-// fetch error in a ProviderModelsUnavailableError with the AbortError as
-// its cause, so the resolver's detection walks the cause chain.
-test('enumerateModelCandidates rethrows AbortError from a per-upstream catalog fetch', async () => {
-  clearInFlightForTesting();
-  const { repo } = await setupAppTest();
-  await repo.upstreams.deleteAll();
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_aborting',
     name: 'Aborting',
     sortOrder: 1,
@@ -383,28 +407,16 @@ test('enumerateModelCandidates rethrows AbortError from a per-upstream catalog f
       throw new Error(`Unhandled fetch ${request.url}`);
     },
     async () => {
-      let thrown: unknown = null;
-      try {
-        await enumerateModelCandidates({
-          upstreamIds: null,
-          model: 'any-model',
-          kind: 'chat',
-          scheduler: testScheduler,
-          runtimeLocation: 'TEST',
-        });
-      } catch (e) {
-        thrown = e;
-      }
-      // The thrown error chains back to our injected AbortError via .cause.
-      const isAbortInChain = (err: unknown): boolean => {
-        for (let cur: unknown = err; cur != null; cur = (cur as { cause?: unknown }).cause) {
-          if (cur instanceof Error && cur.name === 'AbortError') return true;
-        }
-        return false;
-      };
-      if (!isAbortInChain(thrown)) {
-        throw new Error(`expected rejection to carry an AbortError in its cause chain; got: ${thrown instanceof Error ? `${thrown.name}: ${thrown.message}` : String(thrown)}`);
-      }
+      const resolved = await enumerateModelCandidates({
+        upstreamIds: null,
+        randomizeUpstreams: false,
+        model: 'any-model',
+        kind: 'chat',
+        scheduler: testScheduler,
+        runtimeLocation: 'TEST',
+      });
+      expect(resolved.candidates).toEqual([]);
+      expect(resolved.failedUpstreams).toEqual(['Aborting']);
     },
   );
 });
@@ -414,15 +426,15 @@ test('enumerateModelCandidates rethrows AbortError from a per-upstream catalog f
 // upstream fetch. The failure renderer surfaces this as a model-missing 404
 // without re-deriving the empty-cap branch.
 test('enumerateModelCandidates returns the empty triple when the visible upstream list is empty', async () => {
-  clearInFlightForTesting();
   const { repo } = await setupAppTest();
   await repo.upstreams.deleteAll();
   // A populated catalog is the case under test: the empty cap, not an empty
   // catalog, is what yields the empty triple.
-  await repo.upstreams.save(buildCustomUpstreamRecord({ id: 'up_a', name: 'A', sortOrder: 1 }));
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({ id: 'up_a', name: 'A', sortOrder: 1 }));
 
   const resolved = await enumerateModelCandidates({
     upstreamIds: [],
+    randomizeUpstreams: false,
     model: 'any-model',
     kind: 'chat',
     scheduler: testScheduler,
@@ -461,18 +473,17 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
 
   const seedUpstreams = async (repo: Awaited<ReturnType<typeof setupAppTest>>['repo']): Promise<void> => {
     await repo.upstreams.deleteAll();
-    await repo.upstreams.save(buildCustomUpstreamRecord({
+    await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
       id: 'up_a', name: 'A', sortOrder: 1,
       config: { baseUrl: 'https://a.example.com', authStyle: 'bearer', apiKey: 'sk-a', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [] },
     }));
-    await repo.upstreams.save(buildCustomUpstreamRecord({
+    await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
       id: 'up_b', name: 'B', sortOrder: 2,
       config: { baseUrl: 'https://b.example.com', authStyle: 'bearer', apiKey: 'sk-b', endpoints: { openaiChatCompletions: {} }, ingressHeadersRules: [] },
     }));
   };
 
   test('flattens across targets in declaration order for first-available', async () => {
-    clearInFlightForTesting();
     const { repo } = await setupAppTest();
     await seedUpstreams(repo);
     await repo.modelAliases.insert({
@@ -489,7 +500,7 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
       buildCatalogFetch({ up_a: ['gpt-5'], up_b: ['claude'] }),
       async () => {
         const resolved = await enumerateModelCandidates({
-          upstreamIds: null, model: 'smart', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          upstreamIds: null, randomizeUpstreams: false, model: 'smart', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
         });
         assertEquals(
           resolved.candidates.map(c => `${c.model.id}@${c.provider.upstreamId}`),
@@ -500,7 +511,6 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
   });
 
   test('shuffles the outer walk for random selection but keeps intra-target order', async () => {
-    clearInFlightForTesting();
     const { repo } = await setupAppTest();
     await seedUpstreams(repo);
     await repo.modelAliases.insert({
@@ -517,7 +527,7 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
       buildCatalogFetch({ up_a: ['gpt-5', 'claude'], up_b: ['gpt-5', 'claude'] }),
       async () => {
         const resolved = await enumerateModelCandidates({
-          upstreamIds: null, model: 'random-alias', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          upstreamIds: null, randomizeUpstreams: false, model: 'random-alias', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
         });
         // Each target contributes two candidates (up_a before up_b, the
         // configured sort order). The two two-candidate blocks stay together
@@ -532,8 +542,45 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
     );
   });
 
+  test('randomizes upstream groups independently for each random alias target', async () => {
+    const { repo } = await setupAppTest();
+    await seedUpstreams(repo);
+    await repo.modelAliases.insert({
+      id: 'alias_random-both',
+      name: 'random-both', kind: 'chat', selection: 'random',
+      targets: [
+        { target_model_id: 'gpt-5', rules: {} },
+        { target_model_id: 'claude', rules: {} },
+      ],
+      ...aliasCommon,
+    });
+
+    await withMockedFetch(
+      buildCatalogFetch({ up_a: ['gpt-5', 'claude'], up_b: ['gpt-5', 'claude'] }),
+      async () => {
+        const random = vi.spyOn(Math, 'random')
+          .mockReturnValueOnce(0)
+          .mockReturnValueOnce(0.999)
+          .mockReturnValueOnce(0);
+        try {
+          const resolved = await enumerateModelCandidates({
+            upstreamIds: null, randomizeUpstreams: true, model: 'random-both', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          });
+          expect(resolved.candidates.map(candidate => `${candidate.model.id}@${candidate.provider.upstreamId}`)).toEqual([
+            'claude@up_a',
+            'claude@up_b',
+            'gpt-5@up_b',
+            'gpt-5@up_a',
+          ]);
+          expect(random).toHaveBeenCalledTimes(3);
+        } finally {
+          random.mockRestore();
+        }
+      },
+    );
+  });
+
   test('dedups (model, upstream, rules) when two targets hit the same binding with identical rules', async () => {
-    clearInFlightForTesting();
     const { repo } = await setupAppTest();
     await seedUpstreams(repo);
     await repo.modelAliases.insert({
@@ -550,7 +597,7 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
       buildCatalogFetch({ up_a: ['gpt-5'], up_b: [] }),
       async () => {
         const resolved = await enumerateModelCandidates({
-          upstreamIds: null, model: 'dup-alias', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          upstreamIds: null, randomizeUpstreams: false, model: 'dup-alias', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
         });
         assertEquals(resolved.candidates.length, 1);
         assertEquals(resolved.candidates[0]!.model.id, 'gpt-5');
@@ -560,7 +607,6 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
   });
 
   test('keeps the first representative in its original position when duplicate bindings are interleaved', async () => {
-    clearInFlightForTesting();
     const { repo } = await setupAppTest();
     await seedUpstreams(repo);
     await repo.modelAliases.insert({
@@ -578,7 +624,7 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
       buildCatalogFetch({ up_a: ['gpt-5'], up_b: ['claude'] }),
       async () => {
         const resolved = await enumerateModelCandidates({
-          upstreamIds: null, model: 'interleaved-duplicates', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          upstreamIds: null, randomizeUpstreams: false, model: 'interleaved-duplicates', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
         });
         expect(resolved.candidates.map(candidate => ({
           binding: `${candidate.model.id}@${candidate.provider.upstreamId}`,
@@ -592,7 +638,6 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
   });
 
   test('keeps two entries for the same (model, upstream) with distinct rules', async () => {
-    clearInFlightForTesting();
     const { repo } = await setupAppTest();
     await seedUpstreams(repo);
     await repo.modelAliases.insert({
@@ -609,7 +654,7 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
       buildCatalogFetch({ up_a: ['gpt-5'], up_b: [] }),
       async () => {
         const resolved = await enumerateModelCandidates({
-          upstreamIds: null, model: 'two-rules', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          upstreamIds: null, randomizeUpstreams: false, model: 'two-rules', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
         });
         assertEquals(resolved.candidates.length, 2);
         expect(resolved.candidates.map(c => c.rules?.reasoning?.effort)).toEqual(['low', 'high']);
@@ -618,7 +663,6 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
   });
 
   test('falls through to a later target when an earlier one has no kind-matching binding', async () => {
-    clearInFlightForTesting();
     const { repo } = await setupAppTest();
     await seedUpstreams(repo);
     await repo.modelAliases.insert({
@@ -635,7 +679,7 @@ describe('enumerateModelCandidates alias walk (flat + dedup)', () => {
       buildCatalogFetch({ up_a: ['gpt-5'], up_b: [] }),
       async () => {
         const resolved = await enumerateModelCandidates({
-          upstreamIds: null, model: 'fallback', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
+          upstreamIds: null, randomizeUpstreams: false, model: 'fallback', kind: 'chat', scheduler: testScheduler, runtimeLocation: 'TEST',
         });
         // The `missing` target contributes nothing; the `gpt-5` target
         // contributes one candidate carrying its own rule overlay.

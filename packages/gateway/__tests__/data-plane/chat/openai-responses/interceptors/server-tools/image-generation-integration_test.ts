@@ -3,11 +3,12 @@ import { beforeEach, test, vi } from 'vitest';
 import type { OpenAIResponsesInvocation } from '../../../../../../src/data-plane/chat/openai-responses/interceptors/types.ts';
 import { initRepo } from '../../../../../../src/repo/index.ts';
 import { InMemoryRepo } from '../../../../../repo/memory.ts';
+import { saveUpstreamForTest } from '../../../../../repo/upstreams.ts';
 import { mockChatGatewayCtx } from '../../../../../test-utils/gateway-ctx.ts';
 import { createInMemoryImageProcessor, initExternalResourceFetcher, initImageProcessor } from '@floway-dev/platform';
 import { eventFrame } from '@floway-dev/protocols/common';
 import type { ProtocolFrame } from '@floway-dev/protocols/common';
-import type { OpenAIResponsesResult, OpenAIResponsesStreamEvent, OpenAIResponsesTool, OpenAIResponsesToolChoice } from '@floway-dev/protocols/openai-responses';
+import type { CanonicalOpenAIResponsesInputItem, OpenAIResponsesResultEx, OpenAIResponsesStreamEventEx, OpenAIResponsesTool, OpenAIResponsesToolChoice } from '@floway-dev/protocols/openai-responses';
 import { type EventResult, type ExecuteResult, type FlagId, type OpenAIImagesEditsRequest } from '@floway-dev/provider';
 import { assert, assertEquals, assertStringIncludes, stubModelCandidate } from '@floway-dev/test-utils';
 
@@ -94,8 +95,8 @@ const shim = withOpenAIResponsesServerToolShim([imageGenerationServerTool]);
 
 const MODEL_IDENTITY = { model: 'orchestrator', upstream: 'u', modelKey: 'orchestrator', pricing: null };
 
-const emptyResult = (status: OpenAIResponsesResult['status']): OpenAIResponsesResult => ({
-  id: 'upstream', object: 'response', model: 'orchestrator', output: [], output_text: '', status, error: null, incomplete_details: null,
+const emptyResult = (status: OpenAIResponsesResultEx['status']): OpenAIResponsesResultEx => ({
+  id: 'upstream', object: 'response', model: 'orchestrator', output: [], status, error: null, incomplete_details: null,
 });
 
 const jsonResponse = (b64: string): Response =>
@@ -118,28 +119,27 @@ const rateLimitResponse = (retryAfterMs: number | null): Response => {
 
 // One scripted upstream turn: the orchestrator calls image_generation with the
 // given prompt, then the upstream completes.
-const callTurn = (outputIndex: number, callId: string, prompt: string): ProtocolFrame<OpenAIResponsesStreamEvent>[] => {
-  const args = JSON.stringify({ prompt });
+const callTurn = (outputIndex: number, callId: string, prompt: string, args = JSON.stringify({ prompt })): ProtocolFrame<OpenAIResponsesStreamEventEx>[] => {
   return [
     eventFrame({ type: 'response.created', response: emptyResult('in_progress') }),
     eventFrame({ type: 'response.output_item.added', output_index: outputIndex, item: { type: 'function_call', call_id: callId, name: 'image_generation', arguments: '', status: 'in_progress' } }),
     eventFrame({ type: 'response.output_item.done', output_index: outputIndex, item: { type: 'function_call', call_id: callId, name: 'image_generation', arguments: args, status: 'completed' } }),
     eventFrame({ type: 'response.completed', response: emptyResult('completed') }),
-  ] as ProtocolFrame<OpenAIResponsesStreamEvent>[];
+  ] as ProtocolFrame<OpenAIResponsesStreamEventEx>[];
 };
 
-const messageTurn = (text: string): ProtocolFrame<OpenAIResponsesStreamEvent>[] => [
+const messageTurn = (text: string): ProtocolFrame<OpenAIResponsesStreamEventEx>[] => [
   eventFrame({ type: 'response.created', response: emptyResult('in_progress') }),
   eventFrame({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', role: 'assistant', content: [], status: 'in_progress' } }),
   eventFrame({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text }] } }),
   eventFrame({ type: 'response.completed', response: emptyResult('completed') }),
-] as ProtocolFrame<OpenAIResponsesStreamEvent>[];
+] as ProtocolFrame<OpenAIResponsesStreamEventEx>[];
 
 const withResponseEcho = (
-  frames: ProtocolFrame<OpenAIResponsesStreamEvent>[],
+  frames: ProtocolFrame<OpenAIResponsesStreamEventEx>[],
   tools: OpenAIResponsesTool[],
   toolChoice?: OpenAIResponsesToolChoice,
-): ProtocolFrame<OpenAIResponsesStreamEvent>[] => frames.map(frame => {
+): ProtocolFrame<OpenAIResponsesStreamEventEx>[] => frames.map(frame => {
   if (frame.type !== 'event' || (frame.event.type !== 'response.created' && frame.event.type !== 'response.completed')) return frame;
   return eventFrame({
     ...frame.event,
@@ -148,16 +148,16 @@ const withResponseEcho = (
       tools,
       ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
     },
-  } as OpenAIResponsesStreamEvent);
+  } as OpenAIResponsesStreamEventEx);
 });
 
-const scriptedRun = (turns: ProtocolFrame<OpenAIResponsesStreamEvent>[][]) => {
+const scriptedRun = (turns: ProtocolFrame<OpenAIResponsesStreamEventEx>[][]) => {
   let i = 0;
-  return async (): Promise<ExecuteResult<ProtocolFrame<OpenAIResponsesStreamEvent>>> => {
+  return async (): Promise<ExecuteResult<ProtocolFrame<OpenAIResponsesStreamEventEx>>> => {
     if (i >= turns.length) throw new Error(`unexpected run() call ${i + 1}; only ${turns.length} scripted`);
     const frames = turns[i++];
-    const events: AsyncIterable<ProtocolFrame<OpenAIResponsesStreamEvent>> = (async function* () { for (const f of frames) yield f; })();
-    return { type: 'events', events, modelIdentity: MODEL_IDENTITY } as EventResult<ProtocolFrame<OpenAIResponsesStreamEvent>>;
+    const events: AsyncIterable<ProtocolFrame<OpenAIResponsesStreamEventEx>> = (async function* () { for (const f of frames) yield f; })();
+    return { type: 'events', events, modelIdentity: MODEL_IDENTITY } as EventResult<ProtocolFrame<OpenAIResponsesStreamEventEx>>;
   };
 };
 
@@ -183,9 +183,9 @@ const makeCtx = (
 });
 const gatewayCtx = () => mockChatGatewayCtx({ wantsStream: true });
 
-const drain = async (result: ExecuteResult<ProtocolFrame<OpenAIResponsesStreamEvent>>): Promise<OpenAIResponsesStreamEvent[]> => {
+const drain = async (result: ExecuteResult<ProtocolFrame<OpenAIResponsesStreamEventEx>>): Promise<OpenAIResponsesStreamEventEx[]> => {
   if (result.type !== 'events') throw new Error(`expected events, got ${result.type}`);
-  const out: OpenAIResponsesStreamEvent[] = [];
+  const out: OpenAIResponsesStreamEventEx[] = [];
   for await (const f of result.events) if (f.type === 'event') out.push(f.event);
   return out;
 };
@@ -196,11 +196,12 @@ beforeEach(async () => {
   // production code path. Seed the in-memory repo with the mocked candidate's
   // upstream id so the fetcher mapper resolves it instead of throwing
   // "unknown upstream id: u".
-  await repo.upstreams.save({
+  await saveUpstreamForTest(repo.upstreams, {
     id: 'u',
     kind: 'custom',
     name: 'mock-image',
     enabled: true,
+    usageRefreshIntervalMinutes: 0,
     sortOrder: 0,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -252,6 +253,73 @@ test('generates an image end-to-end and emits the native lifecycle', async () =>
   assertEquals(item.action, 'generate');
 });
 
+test.each([
+  { raw: ' { "prompt" : "\\u732b" }\n', prompt: '\u732b' },
+  { raw: '{prompt:"repaired"}', prompt: 'repaired' },
+])('image execution and client replay retain original call identity and arguments: $raw', async ({ raw, prompt }) => {
+  stub.nextGenerations = [jsonResponse(REMOTE_PNG_B64)];
+  const invocation = makeCtx([{ type: 'message', role: 'user', content: 'draw' }], 'generate');
+  const ctx = gatewayCtx();
+  const inputs: CanonicalOpenAIResponsesInputItem[][] = [];
+  const run = scriptedRun([callTurn(0, 'native_call', prompt, raw), messageTurn('answer')]);
+  const events = await drain(await shim(invocation, ctx, async () => {
+    inputs.push(structuredClone(invocation.payload.input));
+    return await run();
+  }));
+  assertEquals(stub.generationsCalls.length, 1);
+  assertEquals(stub.generationsCalls[0].prompt, prompt);
+  const restored = inputs[1].find(item => item.type === 'function_call');
+  assert(restored?.type === 'function_call');
+  assertEquals(restored.call_id, 'native_call');
+  assertEquals(restored.arguments, raw);
+  const completed = events.find(event => event.type === 'response.completed');
+  assert(completed?.type === 'response.completed');
+  const next = makeCtx([...completed.response.output, { type: 'message', role: 'user', content: 'next' }], 'generate');
+  const nextCtx = gatewayCtx();
+  await drain(await shim(next, nextCtx, async () => {
+    const original = next.payload.input.find(item => item.type === 'function_call');
+    assertEquals(original, restored);
+    return await scriptedRun([messageTurn('done')])();
+  }));
+  assertEquals(stub.generationsCalls.length, 1);
+});
+
+test('generates an image from an additional_tools declaration without moving the item', async () => {
+  stub.nextGenerations = [jsonResponse('R0VO')];
+  const invocation = makeCtx([
+    { type: 'additional_tools', role: 'developer', id: 'at_1', tools: [{ type: 'image_generation', quality: 'low' }] },
+    { type: 'message', role: 'user', content: 'draw a cat' },
+  ]);
+  delete invocation.payload.tools;
+
+  const result = await shim(invocation, gatewayCtx(), scriptedRun([
+    callTurn(0, 'call_1', 'a cat'),
+    messageTurn('done'),
+  ]));
+  await drain(result);
+
+  assertEquals(invocation.payload.tools, undefined);
+  const item = invocation.payload.input[0];
+  assert(item.type === 'additional_tools');
+  assertEquals(item.id, 'at_1');
+  assertEquals(item.tools[0].type, 'function');
+  assertEquals(stub.generationsCalls[0], { prompt: 'a cat', n: 1, quality: 'low' });
+});
+
+test('invalid image generation in tool_search_output reports its input path', async () => {
+  const invocation = makeCtx([{
+    type: 'tool_search_output', call_id: 'search_1', tools: [{ type: 'image_generation', size: '512x512' }],
+  }]);
+  delete invocation.payload.tools;
+
+  const result = await shim(invocation, gatewayCtx(), async () => {
+    throw new Error('Invalid request reached upstream');
+  });
+  assert(result.type === 'api-error');
+  const body = JSON.parse(new TextDecoder().decode(result.body)) as { error: { param: string } };
+  assertEquals(body.error.param, 'input[0].tools[0].size');
+});
+
 test('restores a forced hosted choice when the terminal upstream echo omits it', async () => {
   stub.nextGenerations = [jsonResponse('R0VO')];
   const hostedChoice = { type: 'image_generation' } as const;
@@ -268,6 +336,25 @@ test('restores a forced hosted choice when the terminal upstream echo omits it',
   assert(completed?.type === 'response.completed');
   assertEquals(completed.response.tools, [hostedTool]);
   assertEquals(completed.response.tool_choice, hostedChoice);
+});
+
+test('keeps the top-level hosted echo when a later input declaration changes the active config', async () => {
+  stub.nextGenerations = [jsonResponse('R0VO')];
+  const invocation = makeCtx([
+    { type: 'additional_tools', role: 'developer', tools: [{ type: 'image_generation', quality: 'high' }] },
+  ], 'generate', { quality: 'low' });
+  const topLevelTool = invocation.payload.tools![0];
+  const replacement = { type: 'function', name: 'image_generation', parameters: {}, strict: false } as OpenAIResponsesTool;
+  const result = await shim(invocation, gatewayCtx(), scriptedRun([
+    withResponseEcho(callTurn(0, 'call_1', 'a cat'), [replacement]),
+    withResponseEcho(messageTurn('done'), [replacement]),
+  ]));
+  const events = await drain(result);
+
+  assertEquals(stub.generationsCalls[0], { prompt: 'a cat', n: 1, quality: 'high' });
+  const completed = events.find(event => event.type === 'response.completed');
+  assert(completed?.type === 'response.completed');
+  assertEquals(completed.response.tools, [topLevelTool]);
 });
 
 test('relays real partial_image frames when partial_images > 0', async () => {
@@ -599,7 +686,7 @@ test('an image sub-call records its own perf row attributed to the image backend
   assertEquals(imageRows[0].model, 'gpt-image-2');
   // The image shim runs on a local AttemptState distinct from the outer
   // OpenAI Responses turn's — no image-call stamps may leak onto ctx.attempt.
-  assertEquals(ctx.attempt.upstreamCallStartedAt, null);
-  assertEquals(ctx.attempt.firstOutputTokenAt, null);
+  assertEquals(ctx.attempt.timing.upstreamCallStartedAt, null);
+  assertEquals(ctx.attempt.timing.firstOutputTokenAt, null);
   assertEquals(ctx.attempt.telemetry, undefined);
 });

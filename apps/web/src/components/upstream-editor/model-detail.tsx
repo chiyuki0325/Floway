@@ -3,6 +3,7 @@ import { useEffect, useId, useRef } from 'react';
 
 import type { ModelRow } from './data';
 import { publicModelId } from './data';
+import { DecisionTargetEditor } from './decision-target-editor';
 import { CHAT_ENDPOINT_KEYS, endpointOptionsFor, IMAGE_ENDPOINT_KEYS, shapeForKind } from './endpoints';
 import { FeatureFlagsEditor } from './feature-flags';
 import { type ModelValidationField, modelValidationIssues } from './model-validation';
@@ -13,12 +14,14 @@ import { EditorSection } from './section';
 import type { UpstreamRecord } from '../../api/types';
 import { fluentComponents } from '../../fluent';
 import { type TFunction, useTranslation } from '../../i18n/translation';
+import { pruneLimitsForKind } from '../models/limits';
+import { ModelLimitsFields } from '../models/limits-editor';
 import { ChoiceGroup } from '../ui/choice-group';
 import { Checkbox, Dropdown, Input, Switch } from '../ui/fluent-form-controls';
 import { CHECKBOX_LIST_CLASS, PANE_GAP_CLASS, TWO_COLUMN_FORM_CLASS } from '../ui/layout';
 import { MultiselectCombobox, valuesAsOptions } from '../ui/multiselect-combobox';
 import { SectionHeader } from '../ui/section-header';
-import type { UpstreamChatModelConfig, UpstreamModelConfig } from '@floway-dev/provider/model-config';
+import type { UpstreamChatModelConfig, UpstreamModelConfig } from '@floway-dev/provider/browser';
 
 const {
   Button,
@@ -71,9 +74,14 @@ export function ModelDetail({
   const setKind = (kind: UpstreamModelConfig['kind']) => patch({
     kind,
     chat: kind === 'chat' ? row.config.chat : undefined,
+    // Only a chat turn carries an opaque blob, so the scope goes with the kind.
+    opaqueBlobCompatibilityScope: kind === 'chat' ? row.config.opaqueBlobCompatibilityScope : undefined,
     rerankTarget: undefined,
-    ...(kind === 'image' ? { limits: undefined } : {}),
-    ...shapeForKind(kind, row.config),
+    decisionTarget: undefined,
+    // A kind keeps only the limits it can state, so a value the form no longer
+    // shows is not written back as a budget the new kind cannot mean.
+    ...(kind !== row.config.kind ? { limits: pruneLimitsForKind(row.config.limits, kind) } : {}),
+    ...shapeForKind(kind, row.config, record.kind),
   });
 
   const updateLimit = (key: keyof NonNullable<UpstreamModelConfig['limits']>, raw: string) => {
@@ -101,6 +109,20 @@ export function ModelDetail({
   const mandatory = row.config.chat?.reasoning?.mandatory === true;
   const controlledReasoning = effort !== undefined || budget !== undefined || row.config.chat?.reasoning?.adaptive === true;
   const imageInput = row.config.chat?.modalities?.input.includes('image') === true;
+  const opaqueBlobCompatibilityScope = row.config.opaqueBlobCompatibilityScope;
+  const bindOpaqueBlobsToUpstream = opaqueBlobCompatibilityScope?.bindToUpstream ?? true;
+
+  const updateOpaqueBlobCompatibilityScope = (
+    update: Partial<NonNullable<UpstreamModelConfig['opaqueBlobCompatibilityScope']>>,
+  ) => {
+    const next = {
+      bindToUpstream: bindOpaqueBlobsToUpstream,
+      ...opaqueBlobCompatibilityScope,
+      ...update,
+    };
+    if (next.key === undefined) delete next.key;
+    patch({ opaqueBlobCompatibilityScope: next });
+  };
 
   useEffect(() => {
     if (revealValidation && upstreamIdError) upstreamIdRef.current?.focus();
@@ -141,16 +163,45 @@ export function ModelDetail({
                 <Option value="chat">Chat</Option><Option value="embedding">Embedding</Option><Option value="image">Image</Option><Option value="transcription">Transcription</Option>
                 {/* The gateway only accepts a rerank target on a custom upstream, so the kind is offered only where it can be saved. */}
                 {record.kind === 'custom' && <Option value="rerank">Rerank</Option>}
+                {/* Decision models are first-class on custom, Azure, Ollama, Copilot, and
+                    every other upstream that serves a decision dialect. */}
+                <Option value="decision">Decision</Option>
               </Dropdown>
             </Field>
-            <Field className="min-w-0" label={record.kind === 'azure' ? t('dashboard.upstreamEditor.models.deployment') : t('dashboard.upstreamEditor.models.upstreamId')} validationMessage={upstreamIdError} validationState={upstreamIdError ? 'error' : undefined}>
+            {record.kind !== 'kimi-code' && <Field className="min-w-0" label={record.kind === 'azure' ? t('dashboard.upstreamEditor.models.deployment') : t('dashboard.upstreamEditor.models.upstreamId')} validationMessage={upstreamIdError} validationState={upstreamIdError ? 'error' : undefined}>
               <Input className="!w-full font-mono" placeholder={record.kind === 'azure' ? t('dashboard.upstreamEditor.models.deploymentPlaceholder') : t('dashboard.upstreamEditor.models.upstreamIdPlaceholder')} readOnly={fieldsReadOnly || row.hasAuto} ref={upstreamIdRef} value={row.config.upstreamModelId} onBlur={() => onUpstreamModelIdCommit(row.config.upstreamModelId)} onChange={(_, data) => patch({ upstreamModelId: data.value })} />
-            </Field>
+            </Field>}
             <Field className="min-w-0" label={t('dashboard.upstreamEditor.models.publicId')}>
               <Input className="!w-full font-mono" placeholder={row.config.upstreamModelId || t('dashboard.upstreamEditor.models.publicIdPlaceholder')} readOnly={fieldsReadOnly} value={row.config.publicModelId ?? ''} onChange={(_, data) => patch({ publicModelId: data.value || undefined })} />
             </Field>
           </div>
         </EditorSection>
+
+        {/* Opaque blobs ride a chat turn's history across models; no other kind
+            carries one. */}
+        {row.config.kind === 'chat' && <EditorSection
+          info={<span className="whitespace-pre-line">{t('dashboard.upstreamEditor.models.opaqueBlobCompatibilityHint')}</span>}
+          level={3}
+          title={t('dashboard.upstreamEditor.models.opaqueBlobCompatibility')}
+        >
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <Input
+              aria-label={t('dashboard.upstreamEditor.models.opaqueBlobCompatibilityKey')}
+              className="min-w-[220px] flex-1 font-mono"
+              placeholder={row.config.upstreamModelId}
+              readOnly={fieldsReadOnly}
+              value={opaqueBlobCompatibilityScope?.key ?? ''}
+              onChange={(_, data) => updateOpaqueBlobCompatibilityScope({ key: data.value || undefined })}
+            />
+            <Switch
+              checked={bindOpaqueBlobsToUpstream}
+              className="flex-none"
+              label={t('dashboard.upstreamEditor.models.bindOpaqueBlobsToUpstream')}
+              readOnly={fieldsReadOnly}
+              onChange={(_, data) => updateOpaqueBlobCompatibilityScope({ bindToUpstream: data.checked })}
+            />
+          </div>
+        </EditorSection>}
 
         {ENDPOINT_CHOICE_KINDS.has(row.config.kind) && <EditorSection error={validationMessage('endpoints')} level={3} title={t('dashboard.upstreamEditor.models.endpoints')}>
           <div className={`${TWO_COLUMN_FORM_CLASS} ${CHECKBOX_LIST_CLASS}`}>
@@ -172,12 +223,19 @@ export function ModelDetail({
           <RerankTargetEditor readOnly={fieldsReadOnly} value={row.config.rerankTarget} onChange={rerankTarget => patch({ rerankTarget })} />
         </EditorSection>}
 
+        {row.config.kind === 'decision' && record.kind === 'custom' && <EditorSection error={validationMessage('decisionTarget')} level={3} title={t('dashboard.upstreamEditor.models.decisionTarget')}>
+          <DecisionTargetEditor readOnly={fieldsReadOnly} value={row.config.decisionTarget ?? { protocol: 'typesafe-systemone' }} onChange={decisionTarget => patch({ decisionTarget })} />
+        </EditorSection>}
+
         {row.config.kind !== 'image' && <EditorSection level={3} title={t('dashboard.upstreamEditor.models.capabilities')}>
-          <div className="grid grid-cols-3 gap-4 max-[760px]:grid-cols-1">
-            <NumberField label={t('dashboard.upstreamEditor.models.contextWindow')} placeholder="e.g. 1050000" readOnly={fieldsReadOnly} value={row.config.limits?.max_context_window_tokens} onChange={raw => updateLimit('max_context_window_tokens', raw)} />
-            <NumberField label={t('dashboard.upstreamEditor.models.promptTokens')} placeholder="e.g. 922000" readOnly={fieldsReadOnly} value={row.config.limits?.max_prompt_tokens} onChange={raw => updateLimit('max_prompt_tokens', raw)} />
-            <NumberField label={t('dashboard.upstreamEditor.models.outputTokens')} placeholder="e.g. 128000" readOnly={fieldsReadOnly} value={row.config.limits?.max_output_tokens} onChange={raw => updateLimit('max_output_tokens', raw)} />
-          </div>
+          <ModelLimitsFields
+            columnGapClass="gap-4"
+            kind={row.config.kind}
+            limits={row.config.limits}
+            onChange={updateLimit}
+            readOnly={fieldsReadOnly}
+            t={t}
+          />
           {row.config.kind === 'chat' && <>
             <div aria-labelledby={imageInputLabelId} className="grid gap-3" role="group">
               <Text id={imageInputLabelId} weight="semibold">{t('dashboard.upstreamEditor.models.imageInput')}</Text>
@@ -240,10 +298,9 @@ function NumberField({ label, onChange, placeholder, readOnly, value }: { label:
 
 function EffortEditor({ effort, onChange, readOnly, t }: { readOnly: boolean; effort: NonNullable<UpstreamChatModelConfig['reasoning']>['effort'] & {}; onChange: (effort: NonNullable<UpstreamChatModelConfig['reasoning']>['effort']) => void; t: TFunction }) {
   const supported = effort.supported;
-  const defaultEffort = effort.default ?? '';
   const setSupported = (values: readonly string[]) => onChange({
     supported: [...values],
-    default: values.includes(defaultEffort) ? defaultEffort : values[0] ?? '',
+    default: values.includes(effort.default) ? effort.default : values[0] ?? '',
   });
   return <div className={`grid grid-cols-[minmax(0,1fr)_minmax(180px,0.45fr)] ${PANE_GAP_CLASS} max-[760px]:grid-cols-1`}>
     <Field label={t('dashboard.upstreamEditor.models.supportedEfforts')}>
@@ -259,7 +316,7 @@ function EffortEditor({ effort, onChange, readOnly, t }: { readOnly: boolean; ef
       />
     </Field>
     <Field label={t('dashboard.upstreamEditor.models.defaultEffort')}>
-      <Dropdown disabled={supported.length === 0} readOnly={readOnly} selectedOptions={defaultEffort === '' ? [] : [defaultEffort]} value={defaultEffort} onOptionSelect={(_, data) => data.optionValue !== undefined && onChange({ ...effort, default: data.optionValue })}>
+      <Dropdown disabled={supported.length === 0} readOnly={readOnly} selectedOptions={[effort.default]} value={effort.default} onOptionSelect={(_, data) => data.optionValue !== undefined && onChange({ ...effort, default: data.optionValue })}>
         {supported.map(level => <Option key={level} value={level}>{level}</Option>)}
       </Dropdown>
     </Field>
@@ -273,6 +330,7 @@ const modelKindLabel = (kind: UpstreamModelConfig['kind']): string => {
   case 'image': return 'Image';
   case 'transcription': return 'Transcription';
   case 'rerank': return 'Rerank';
+  case 'decision': return 'Decision';
   }
 };
 

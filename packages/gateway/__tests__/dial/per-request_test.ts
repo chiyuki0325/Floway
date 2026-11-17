@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createPerRequestFetcher } from '../../src/dial/per-request.ts';
 import { initRepo } from '../../src/repo/index.ts';
 import { InMemoryRepo } from '../repo/memory.ts';
+import { saveUpstreamForTest } from '../repo/upstreams.ts';
 import { initSocketDial, resetSocketDialForTesting, type SocketDial } from '@floway-dev/platform';
 import type { ProxyFallbackEntry } from '@floway-dev/provider';
 
 const stubSocketDial: SocketDial = {
   connect: async () => {
+    throw new Error('stub: per-request_test should not reach a real dial');
+  },
+  startTls: async () => {
     throw new Error('stub: per-request_test should not reach a real dial');
   },
 };
@@ -23,6 +27,7 @@ const upstream = (id: string, proxyFallbackList: ProxyFallbackEntry[]) => ({
   kind: 'copilot' as const,
   name: id,
   enabled: true,
+  usageRefreshIntervalMinutes: 0,
   sortOrder: 0,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
@@ -50,8 +55,8 @@ describe('createPerRequestFetcher', () => {
     // u_bad references the malformed row; u_ok shares the request but does
     // not. The whole-request build must still succeed; only u_bad's fetcher
     // surfaces the parse error, and only when actually called.
-    await repo.upstreams.save(upstream('u_bad', [{ id: 'p_bad' }]));
-    await repo.upstreams.save(upstream('u_ok', []));
+    await saveUpstreamForTest(repo.upstreams, upstream('u_bad', [{ id: 'p_bad' }]));
+    await saveUpstreamForTest(repo.upstreams, upstream('u_ok', []));
     await repo.proxies.insert({ id: 'p_bad', name: 'Bad', url: 'gibberish-no-scheme', dialTimeoutSeconds: null });
 
     const fetcherFor = await createPerRequestFetcher('TEST');
@@ -70,8 +75,8 @@ describe('createPerRequestFetcher', () => {
     // A malformed row sitting unreferenced in the table must not break
     // built-in-only upstreams: we only parse rows that are reachable via some
     // upstream's fallback list.
-    await repo.upstreams.save(upstream('u_direct_fetch', []));
-    await repo.upstreams.save(upstream('u_direct_connect', [{ id: 'direct_connect' }]));
+    await saveUpstreamForTest(repo.upstreams, upstream('u_direct_fetch', []));
+    await saveUpstreamForTest(repo.upstreams, upstream('u_direct_connect', [{ id: 'direct_connect' }]));
     await repo.proxies.insert({ id: 'p_bad', name: 'Bad', url: 'gibberish-no-scheme', dialTimeoutSeconds: null });
 
     let proxyListCalls = 0;

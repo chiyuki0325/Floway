@@ -18,6 +18,7 @@ const buildCustomUpstream = (options: BuildOptions = {}): UpstreamRecord => ({
   kind: 'custom',
   name: 'Custom Provider',
   enabled: true,
+  usageRefreshIntervalMinutes: 0,
   sortOrder: 0,
   createdAt: '2026-06-01T00:00:00.000Z',
   updatedAt: '2026-06-01T00:00:00.000Z',
@@ -116,6 +117,8 @@ test('getProvidedModels returns only manual models and never fetches when models
       const models = await instance.instance.getProvidedModels(directFetcher);
       assertEquals(models.length, 1);
       assertEquals(models[0].id, 'manual-only');
+      assertEquals(models[0].upstreamModelId, 'manual-only');
+      assertEquals(models[0].opaqueBlobCompatibilityScope, { bindToUpstream: true });
       assertEquals(models[0].chat, { image_detail_original: true });
     },
   );

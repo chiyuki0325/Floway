@@ -2,10 +2,11 @@ import type { ProxyEntry } from './proxy-catalog.ts';
 import { createReplayableRequest, type ReplayableRequest } from './replayable-request.ts';
 import { DIRECT_CONNECT_ID, DIRECT_FETCH_ID, entryMatchesColo, isDirectFallbackId } from '../repo/proxy-fallback-list.ts';
 import type { Repo } from '../repo/types.ts';
-import type { HttpRequest } from '@floway-dev/http';
+import type { HttpContentDecoders, HttpRequest } from '@floway-dev/http';
+import type { SocketDial } from '@floway-dev/platform';
 import type { Fetcher, FetchInit, ProxyFallbackEntry } from '@floway-dev/provider';
 import { isAbortError } from '@floway-dev/provider';
-import { ProxyDialError, type ProxyConfig, type ProxyRequestTarget, type RunDirectConnectRequestOptions, type RunProxiedRequestOptions, type SocketDial } from '@floway-dev/proxy';
+import { ProxyDialError, type ProxyConfig, type ProxyRequestTarget, type RunDirectConnectRequestOptions, type RunProxiedRequestOptions } from '@floway-dev/proxy';
 
 interface CreateFetcherInput {
   repo: Pick<Repo, 'proxyBackoffs'>;
@@ -13,8 +14,9 @@ interface CreateFetcherInput {
   fallbackList: ProxyFallbackEntry[];
   proxyById: Map<string, ProxyEntry>;
   // Location tag the request landed in, used to apply each entry's optional
-  // `colos` whitelist via `entryMatchesColo`. See `getRuntimeLocation`.
-  runtimeLocation: string;
+  // `colos` whitelist via `entryMatchesColo`. Null is reserved for platform
+  // events that expose no colo. See `getRuntimeLocation`.
+  runtimeLocation: string | null;
   // Injected so the fetcher stays runtime-agnostic — the composition root
   // chooses the concrete dial/fetch implementations.
   runProxied: (
@@ -40,6 +42,7 @@ interface CreateFetcherInput {
    * installed SocketDial impl.
    */
   socketDial: () => SocketDial;
+  contentDecoders?: () => HttpContentDecoders;
 }
 
 // Two-pass dial strategy. First pass walks the fallback list skipping any
@@ -68,7 +71,8 @@ export const createFetcher = (input: CreateFetcherInput): Fetcher => {
   // no such bound: the same workload survived 233s of measured upstream silence
   // and completed cleanly (https://github.com/Menci/Floway/pull/221).
   // `direct_fetch` keeps the runtime connection pool and HTTP/2, so it stays
-  // selectable, but an operator has to ask for it.
+  // selectable. On Cloudflare, a rejected raw connection can also invoke it
+  // when no direct-fetch entry survives the current colo filter.
   //   https://developers.cloudflare.com/cache/how-to/cache-rules/settings/#proxy-read-timeout-enterprise-only
   //   https://github.com/nodejs/undici/blob/7392d6f9f565e550e9047458c275ae77aeaefbb9/docs/docs/api/Client.md?plain=1#L20
   //
@@ -99,7 +103,7 @@ export const createFetcher = (input: CreateFetcherInput): Fetcher => {
       return Promise.reject(new Error('streaming request bodies are not replayable through direct-connect or proxy transports'));
     }
 
-    return runFallbacks(input, list, url, createReplayableRequest(url, init), directFetchBeforeDialTransport);
+    return runFallbacks(input, list, url, createReplayableRequest(url, init), directFetchBeforeDialTransport, hasDirectFetch);
   };
 };
 
@@ -109,6 +113,7 @@ const runFallbacks = async (
   url: string,
   request: ReplayableRequest,
   directFetchBeforeDialTransport: boolean,
+  hasDirectFetch: boolean,
 ): Promise<Response> => {
   // A direct-fetch attempt before a dial transport can consume native
   // Blob/FormData bodies. Prepare the dial request first so those bodies are
@@ -136,13 +141,13 @@ const runFallbacks = async (
   for (const id of list) {
     if (skip.has(id)) continue;
     triedThisCall.add(id);
-    const result = await tryOne(id, input, request, url, errors);
+    const result = await tryOne(id, input, request, url, errors, hasDirectFetch);
     if (result) return result;
   }
 
   for (const id of list) {
     if (triedThisCall.has(id)) continue;
-    const result = await tryOne(id, input, request, url, errors);
+    const result = await tryOne(id, input, request, url, errors, hasDirectFetch);
     if (result) return result;
   }
 
@@ -159,7 +164,9 @@ const tryOne = async (
   request: ReplayableRequest,
   url: string,
   errors: unknown[],
+  hasDirectFetch: boolean,
 ): Promise<Response | null> => {
+  let directSocketDial: SocketDial | undefined;
   try {
     if (id === DIRECT_FETCH_ID) {
       // Direct egress is the runtime's fetch — it never raises ProxyDialError,
@@ -168,10 +175,11 @@ const tryOne = async (
     }
     if (id === DIRECT_CONNECT_ID) {
       const prepared = await request.prepared();
+      directSocketDial = input.socketDial();
       return await input.runDirectConnect(
         prepared.target,
         prepared.request,
-        { socketDial: input.socketDial(), signal: request.signal },
+        { socketDial: directSocketDial, signal: request.signal, contentDecoders: input.contentDecoders?.() },
       );
     }
     const config = input.proxyById.get(id);
@@ -191,6 +199,7 @@ const tryOne = async (
     // in-flight handshake instead of waiting for the per-proxy deadline.
     const options: RunProxiedRequestOptions = {
       socketDial: input.socketDial(),
+      contentDecoders: input.contentDecoders?.(),
       signal: request.signal,
     };
     if (config.dialTimeoutMs !== null) options.dialTimeoutMs = config.dialTimeoutMs;
@@ -232,6 +241,11 @@ const tryOne = async (
     }
     if (id === DIRECT_CONNECT_ID) {
       if (err instanceof ProxyDialError) {
+        // The Cloudflare socket adapter tags only a rejected socket.opened.
+        // Fetch owns the outcome here, including an HTTP error or rejection.
+        if (!hasDirectFetch && err.stage === 'tcp-connect' && directSocketDial?.shouldConnectErrorFallbackToFetch?.(err.cause)) {
+          return await input.runDirectFetch(url, request.fetchInit());
+        }
         errors.push(err);
         return null;
       }

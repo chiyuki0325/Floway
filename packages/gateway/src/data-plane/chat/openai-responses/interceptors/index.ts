@@ -1,6 +1,11 @@
+import { withOpenAIResponsesAgentMessageShim } from './agent-message-shim.ts';
+import { answerWebSocketWarmup } from './answer-websocket-warmup.ts';
 import { withRoleCompatibilityApplied } from './apply-role-compatibility.ts';
+import { withOpenAIResponsesCollaborationShim } from './collaboration-shim.ts';
 import { withOpenAIResponsesCompactShim } from './compact-shim.ts';
 import { withReasoningDisabledOnForcedToolChoice } from './disable-reasoning-on-forced-tool-choice.ts';
+import { withStoreForcedFalse } from './force-store-false.ts';
+import { withEmptyToolsToolChoiceNormalized } from './normalize-empty-tools-tool-choice.ts';
 import { withExclusiveCachedTokensNormalized } from './normalize-exclusive-cached-tokens.ts';
 import { withOpenAIResponsesServerToolShim } from './server-tool-shim.ts';
 import { imageGenerationServerTool } from './server-tools/image-generation.ts';
@@ -20,7 +25,14 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 // after pairwise translation has finished.
 //
 // Order matters: earlier entries wrap later ones.
-//   - withOpenAIResponsesCompactShim: runs outermost so the action pivot
+//   - answerWebSocketWarmup: runs outermost so a WebSocket `generate: false` prewarm is
+//     answered before any shim or upstream call can turn it into a generation.
+//   - withOpenAIResponsesAgentMessageShim: lowers `agent_message` input items
+//     to framed user messages when the target is not OpenAI Responses (the
+//     translators do not know the item) or `openai-responses-agent-message-shim`
+//     is enabled. Runs before every other entry so none of them, nor the
+//     translation performed by the terminal dispatch, sees the item.
+//   - withOpenAIResponsesCompactShim: wraps the remaining shims so the action pivot
 //     ('compact' → 'generate' for the inner summarization turn) is visible
 //     to every downstream interceptor + the provider terminal. Also
 //     responsible for inbound expansion of prior shim-encoded compaction
@@ -29,10 +41,15 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 //     `strip-traex-image-generation-tool`. Removes TraeX's invalid private
 //     image_gen.imagegen declaration before either a native provider dispatch
 //     or protocol translation can expose it to a model.
+//   - withOpenAIResponsesCollaborationShim: keeps one plaintext namespace around
+//     the complete server-tool loop and restores client identities on egress.
 //   - withOpenAIResponsesServerToolShim: wraps the multi-turn ReAct loop around
 //     the rest of the chain.
 //   - withReasoningDisabledOnForcedToolChoice: gated by
 //     `disable-reasoning-on-forced-tool-choice`.
+//   - withEmptyToolsToolChoiceNormalized: gated by
+//     `empty-tools-tool-choice-none`. Runs inside the server-tool shim so a
+//     tool injected by that shim prevents the empty-list rewrite.
 //   - withRoleCompatibilityApplied: applies role flags in the fixed order
 //     `system → developer → system → user`; later rewrites are authoritative
 //     when flags overlap, and the final step affects only mid-conversation system.
@@ -41,6 +58,9 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 //     as an unknown argument (e.g. Azure DeepSeek). Runs before vendor
 //     normalizers so vendor-specific translation sees the already-stripped
 //     canonical payload.
+//   - withStoreForcedFalse: gated by `openai-responses-store-false`. Sets
+//     `store: false` on the outbound wire body so a stateful upstream operates
+//     in stateless mode.
 //   - withExclusiveCachedTokensNormalized: unconditional on an OpenAI Responses
 //     target. Folds the cache buckets back into `input_tokens` whenever
 //     `total_tokens` witnesses that the upstream reports them alongside it,
@@ -51,15 +71,20 @@ import { withVendorQwenOpenAIResponsesNormalize } from './vendor-qwen-normalize.
 //     the role-compatibility entry so each gets the final say on the outbound wire
 //     body.
 export const openaiResponsesInterceptors: readonly OpenAIResponsesInterceptor[] = [
+  answerWebSocketWarmup,
+  withOpenAIResponsesAgentMessageShim,
   withOpenAIResponsesCompactShim,
   withTraexImageGenerationStripped,
+  withOpenAIResponsesCollaborationShim,
   withOpenAIResponsesServerToolShim([
     webSearchServerTool,
     imageGenerationServerTool,
   ]),
   withReasoningDisabledOnForcedToolChoice,
+  withEmptyToolsToolChoiceNormalized,
   withRoleCompatibilityApplied,
   withPromptCacheKeyStripped,
+  withStoreForcedFalse,
   withExclusiveCachedTokensNormalized,
   withVendorDeepSeekOpenAIResponsesNormalize,
   withVendorQwenOpenAIResponsesNormalize,

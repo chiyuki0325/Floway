@@ -1,34 +1,46 @@
 import type { InferRequestType, InferResponseType } from 'hono/client';
 
 import type { api } from './client';
-import type { SerializedBackoffRow, SerializedProxyRecord } from '@floway-dev/gateway/control-plane/proxies/serialize';
+import type { SerializedBackoffRow, SerializedProxyRecord } from '@floway-dev/gateway/browser';
 
 export type {
   ClaudeCodeAccountCredentialSummary,
   ClaudeCodeQuotaSnapshotData,
   ClaudeCodeQuotaWindow,
-  CodexAccountCredentialState,
-  CodexQuotaSnapshot,
-  CodexQuotaSnapshotMap,
-  CustomRawModel,
-  ListUpstreamModelsResponse,
+  ChatGPTAccountCredentialState,
+  ChatGPTQuotaSnapshot,
+  ChatGPTQuotaSnapshotMap,
+  ChatGPTRateLimitResetCredit,
+  ChatGPTRateLimitResetCredits,
+  ProviderModelsFailureResponse,
   UpstreamRecord,
-} from '@floway-dev/gateway/control-plane/upstreams/types';
+} from '@floway-dev/gateway/browser';
 
 export type UpstreamRecordEnvelope = InferRequestType<
-  typeof api.api.upstreams['list-models']['$post']
+  typeof api.api.upstreams['preview-models']['$post']
 >['json']['record'];
 
 export type ProxyRecord = SerializedProxyRecord;
 export type BackoffRow = SerializedBackoffRow;
 
 export type ApiKey = InferResponseType<typeof api.api.keys.$get, 200>[number];
-export type ControlPlaneUser = InferResponseType<typeof api.api.users.$get, 200>[number];
+export type AccessRecord = InferResponseType<typeof api.api['access-records']['$get'], 200>[number];
+export type ControlPlaneUserDirectory = InferResponseType<(typeof api.api)['user-directory']['$get'], 200>;
+// `/api/permissions` projects its own directory: it carries membership ids
+// inline and the principals this caller may audit, neither of which the user
+// directory exposes.
+export type PermissionsDirectory = InferResponseType<typeof api.api.permissions.$get, 200>['directory'];
+export type PermissionsUser = PermissionsDirectory['users'][number];
+export type PermissionsGroup = PermissionsDirectory['groups'][number];
+export type ControlPlaneUser = ControlPlaneUserDirectory['users'][number];
+export type ControlPlaneGroup = ControlPlaneUserDirectory['groups'][number];
 export type UpstreamOption = InferResponseType<typeof api.api['upstream-options']['$get'], 200>[number];
 
 export type ControlPlaneModel = InferResponseType<typeof api.api.models.$get, 200>['data'][number];
+export type ListedUpstreamRecord = InferResponseType<typeof api.api.upstreams.$get, 200>[number];
 export type SearchConfig = InferResponseType<typeof api.api['search-config']['$get'], 200>;
 export type CopilotQuotaSnapshot = InferResponseType<typeof api.api.upstreams.copilot.quota.$post, 200>;
 export type OllamaUsageRefresh = InferResponseType<typeof api.api.upstreams.ollama.usage.$post, 200>;
+export type KimiCodeUsageRefresh = InferResponseType<typeof api.api.upstreams['kimi-code']['usage']['$post'], 200>;
 export type DeviceFlowStart = InferResponseType<typeof api.api.upstreams.copilot.oauth['device-login']['start']['$post'], 200>;
 export type BackupImportCounts = InferResponseType<typeof api.api.import.$post, 200>['imported'];

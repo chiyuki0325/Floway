@@ -1,16 +1,18 @@
-
 import type { ControlPlaneModel } from '../../api/types';
-import { ANTHROPIC_MESSAGES_FALLBACK_MAX_TOKENS, type AnthropicMessagesResult } from '@floway-dev/protocols/anthropic-messages';
-import { isEventStreamMediaType } from '@floway-dev/protocols/common';
-import type { OpenAIChatCompletionsResult } from '@floway-dev/protocols/openai-chat-completions';
-import type { OpenAIResponsesOutputItem } from '@floway-dev/protocols/openai-responses';
+import {
+  ANTHROPIC_MESSAGES_FALLBACK_MAX_TOKENS,
+  type AnthropicMessagesResult,
+  isEventStreamMediaType,
+  type OpenAIChatCompletionsResultEx,
+  type OpenAIResponsesOutputItemEx,
+} from '@floway-dev/protocols/browser';
 
 export type PlaygroundApi = 'openaiResponses' | 'openaiChatCompletions' | 'anthropicMessages';
 
 export type PlaygroundAssistantOutput =
-  | { api: 'responses'; items: OpenAIResponsesOutputItem[] }
-  | { api: 'chatCompletions'; message: OpenAIChatCompletionsResult['choices'][number]['message'] }
-  | { api: 'messages'; content: AnthropicMessagesResult['content'] };
+  | { api: 'openaiResponses'; items: OpenAIResponsesOutputItemEx[] }
+  | { api: 'openaiChatCompletions'; message: OpenAIChatCompletionsResultEx['choices'][number]['message'] }
+  | { api: 'anthropicMessages'; content: AnthropicMessagesResult['content'] };
 
 export interface PlaygroundMessage {
   id: string;
@@ -21,6 +23,9 @@ export interface PlaygroundMessage {
 }
 
 export const playgroundApis: PlaygroundApi[] = ['openaiResponses', 'openaiChatCompletions', 'anthropicMessages'];
+
+export const playgroundApisFor = (model: ControlPlaneModel): PlaygroundApi[] =>
+  playgroundApis.filter(api => model.endpoints[api]);
 
 export const supportsImageInput = (model: ControlPlaneModel | null): boolean => {
   const modalities = model?.chat?.modalities?.input;

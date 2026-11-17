@@ -1,4 +1,5 @@
 import type { UpstreamRecord } from './model.ts';
+import type { UpstreamMetricLabels } from './upstream-metric-identity.ts';
 
 // Slim upstream-state surface for providers that own runtime state (e.g.
 // Codex's rotated tokens). Reached from the data plane as a request runs and
@@ -11,10 +12,12 @@ import type { UpstreamRecord } from './model.ts';
 // earlier read would, on losing the race, either overwrite the winner's fields
 // or have to re-derive the change itself. The mutator is re-run against
 // whatever state won, so both writers' changes survive. It must therefore be
-// pure, and returning the state unchanged skips the write.
+// pure, and returning the state unchanged skips the write. The version is
+// read atomically with state and participates in the CAS, so a caller can
+// reject observations produced by a configuration that has since changed.
 export interface UpstreamsRepoSlim {
-  getById(id: string): Promise<UpstreamRecord | null>;
-  saveState(id: string, mutate: (current: unknown) => unknown): Promise<void>;
+  getById(id: string): Promise<(UpstreamRecord & { configVersion: number }) | null>;
+  saveState(id: string, mutate: (current: unknown, configVersion: number) => unknown): Promise<void>;
 }
 
 // Thrown when the row a write targets no longer exists. Distinct from a
@@ -29,6 +32,7 @@ export class UpstreamGoneError extends Error {
 }
 
 export interface ProviderRepo {
+  recordUpstreamMetric(upstreamId: string, name: string, labels: UpstreamMetricLabels, value: number, timestamp: number): Promise<void>;
   upstreams: UpstreamsRepoSlim;
 }
 

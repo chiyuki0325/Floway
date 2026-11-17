@@ -30,14 +30,16 @@ export interface GeminiGenerateContentServeCountTokensArgs {
 export const geminiGenerateContentServe = {
   generate: async (args: GeminiGenerateContentServeGenerateArgs): Promise<ExecuteResult<ProtocolFrame<GeminiGenerateContentStreamEvent>>> => {
     const { payload, ctx, model, headers } = args;
-    const affinity = await analyzeGeminiGenerateContentAffinity(payload, ctx.affinity.codec);
     const { candidates: enumerated, sawModel, failedUpstreams } = await enumerateModelCandidates({
+      subject: ctx.user,
       upstreamIds: ctx.upstreamIds,
+      randomizeUpstreams: ctx.randomizeUpstreams,
       model,
       kind: 'chat',
       scheduler: ctx.backgroundScheduler,
       runtimeLocation: ctx.runtimeLocation,
     });
+    const affinity = await analyzeGeminiGenerateContentAffinity(payload, ctx.affinity.codec);
     const viable = enumerated.filter(c => geminiGenerateContentGenerateTarget.canServe(c.model.endpoints));
     const selection = selectAffinityCandidates(viable, affinity);
     if ('kind' in selection) return renderGeminiGenerateContentFailure(selection, 'generate');
@@ -60,14 +62,16 @@ export const geminiGenerateContentServe = {
 
   countTokens: async (args: GeminiGenerateContentServeCountTokensArgs): Promise<ExecuteResult<ProtocolFrame<GeminiGenerateContentStreamEvent>> | PlainResult> => {
     const { payload, ctx, model, headers } = args;
-    const affinity = await analyzeGeminiGenerateContentAffinity(payload, ctx.affinity.codec);
     const { candidates: enumerated, sawModel, failedUpstreams } = await enumerateModelCandidates({
+      subject: ctx.user,
       upstreamIds: ctx.upstreamIds,
+      randomizeUpstreams: ctx.randomizeUpstreams,
       model,
       kind: 'chat',
       scheduler: ctx.backgroundScheduler,
       runtimeLocation: ctx.runtimeLocation,
     });
+    const affinity = await analyzeGeminiGenerateContentAffinity(payload, ctx.affinity.codec);
     const viable = enumerated.filter(c => geminiGenerateContentCountTokensTarget.canServe(c.model.endpoints));
     const selection = selectAffinityCandidates(viable, affinity);
     if ('kind' in selection) return renderGeminiGenerateContentFailure(selection, 'countTokens');

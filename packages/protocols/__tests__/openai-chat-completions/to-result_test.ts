@@ -1,9 +1,9 @@
 import { test } from 'vitest';
 
 import { doneFrame, eventFrame } from '../../src/common/index.ts';
-import type { OpenAIChatCompletionsStreamEvent, OpenAIChatCompletionsResult } from '../../src/openai-chat-completions/index.ts';
+import type { OpenAIChatCompletionsAssistantDeltaEx, OpenAIChatCompletionsAssistantOutputMessageEx, OpenAIChatCompletionsStreamEvent, OpenAIChatCompletionsResult } from '../../src/openai-chat-completions/index.ts';
 import { collectOpenAIChatCompletionsProtocolEventsToResult } from '../../src/openai-chat-completions/to-result.ts';
-import { assertEquals, assertRejects } from '@floway-dev/test-utils';
+import { assertEquals } from '@floway-dev/test-utils';
 
 test('collectOpenAIChatCompletionsProtocolEventsToResult reassembles synthetic OpenAI Chat Completions chunks', async () => {
   const expected: OpenAIChatCompletionsResult = {
@@ -13,24 +13,26 @@ test('collectOpenAIChatCompletionsProtocolEventsToResult reassembles synthetic O
     model: 'gpt-test',
     choices: [
       {
+        logprobs: null,
         index: 0,
         message: {
+          refusal: null,
           role: 'assistant',
           reasoning_text: 'think',
           content: 'Hello',
-        },
+        } as OpenAIChatCompletionsAssistantOutputMessageEx,
         finish_reason: 'stop',
       },
     ],
     usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
   };
 
-  const chunk = (delta: OpenAIChatCompletionsStreamEvent['choices'][number]['delta'], finish_reason: 'stop' | null = null): OpenAIChatCompletionsStreamEvent => ({
+  const chunk = (delta: OpenAIChatCompletionsAssistantDeltaEx, finish_reason: 'stop' | null = null): OpenAIChatCompletionsStreamEvent => ({
     id: expected.id,
     object: 'chat.completion.chunk',
     created: expected.created,
     model: expected.model,
-    choices: [{ index: 0, delta, finish_reason }],
+    choices: [{  index: 0, delta, finish_reason }],
   });
 
   async function* events() {
@@ -52,7 +54,7 @@ test('collectOpenAIChatCompletionsProtocolEventsToResult reassembles synthetic O
   assertEquals(await collectOpenAIChatCompletionsProtocolEventsToResult(events()), expected);
 });
 
-test('collectOpenAIChatCompletionsProtocolEventsToResult rejects OpenAI Chat Completions streams without DONE', async () => {
+test('collectOpenAIChatCompletionsProtocolEventsToResult collects OpenAI Chat Completions streams without DONE', async () => {
   async function* events() {
     yield eventFrame({
       id: 'chatcmpl_truncated',
@@ -69,5 +71,6 @@ test('collectOpenAIChatCompletionsProtocolEventsToResult rejects OpenAI Chat Com
     });
   }
 
-  await assertRejects(async () => await collectOpenAIChatCompletionsProtocolEventsToResult(events()), Error, 'OpenAI Chat Completions stream ended without a DONE sentinel.');
+  const result = await collectOpenAIChatCompletionsProtocolEventsToResult(events());
+  assertEquals(result.choices[0]?.message.content, 'partial');
 });

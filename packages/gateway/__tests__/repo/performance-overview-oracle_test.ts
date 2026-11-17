@@ -1,16 +1,13 @@
 import { test } from 'vitest';
 
 import { aggregatePerformanceForDisplay } from './performance-overview-oracle.ts';
-import { createTelemetryBucket, type TelemetryBucketGranularity } from '../../src/control-plane/shared/telemetry-bucket.ts';
 import type { PerformanceDisplayRecord, PerformanceTelemetryRecord } from '../../src/repo/types.ts';
+import { createTelemetryBucket, type TelemetryBucketOptions } from '@floway-dev/protocols/common';
 import { assertEquals } from '@floway-dev/test-utils';
 
-interface AggregateOptions {
-  bucket: TelemetryBucketGranularity;
+type AggregateOptions = TelemetryBucketOptions & {
   groupBy: import('../../src/repo/types.ts').PerformanceGroupBy;
-  timeZone?: string;
-  timezoneOffsetMinutes: number;
-}
+};
 
 // The oracle is multi-axis; every case focuses on a single axis, so unwrap it
 // through a one-axis map to keep the test surface flat.
@@ -81,7 +78,7 @@ test('Performance overview oracle counts zero-output-error rows as displayed req
     [
       record({
         model: 'gpt-5.5-pro-2026-04-23',
-        upstream: 'codex:1',
+        upstream: 'chatgpt:1',
         requests: 3,
         ttftSamplesOk: 0,
         errorsWithOutput: 0,
@@ -134,14 +131,14 @@ test('Performance overview oracle splits rows by upstream when groupBy is upstre
   const rows = aggregateSingle(
     [
       record({ upstream: 'copilot:1' }),
-      record({ upstream: 'codex:2' }),
+      record({ upstream: 'chatgpt:2' }),
     ],
     { bucket: 'hour', groupBy: 'upstream', timezoneOffsetMinutes: 0 },
   );
 
   assertEquals(rows.length, 2);
   const groups = rows.map(r => r.group).sort();
-  assertEquals(groups, ['codex:2', 'copilot:1']);
+  assertEquals(groups, ['chatgpt:2', 'copilot:1']);
 });
 
 test('Performance overview oracle returns lower edge for overflow-bucket percentile', () => {

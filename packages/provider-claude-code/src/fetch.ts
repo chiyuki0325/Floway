@@ -3,14 +3,17 @@ import { ClaudeCodeOAuthSessionTerminatedError } from './auth/oauth.ts';
 import { pickClaudeCodeHeaders } from './headers.ts';
 import { logWarn, logInfo } from './log.ts';
 import type { ClaudeCodeProviderData } from './models.ts';
-import { parseClaudeCodeQuotaHeaders, type ClaudeCodeQuotaSnapshot } from './quota.ts';
+import { claudeCodeRateLimitedUntil, parseClaudeCodeQuotaHeaders, type ClaudeCodeQuotaSnapshot } from './quota.ts';
 import {
   readClaudeCodeUpstreamState,
   replaceSoleAccount,
   type ClaudeCodeAccountCredential,
 } from './state.ts';
-import type { AnthropicMessagesPayload, AnthropicMessagesStreamEvent } from '@floway-dev/protocols/anthropic-messages';
+import { claudeCodeQuotaMetrics } from './upstream-metrics.ts';
+import type { AnthropicMessagesPayload, AnthropicMessagesStreamEventEx } from '@floway-dev/protocols/anthropic-messages';
 import { parseAnthropicMessagesStream } from '@floway-dev/protocols/anthropic-messages';
+import type { ProtocolFrame, SseFrame } from '@floway-dev/protocols/common';
+import { recordUpstreamMetrics } from '@floway-dev/provider';
 import {
   getProviderRepo,
   headersForAnthropicMessagesCall,
@@ -22,6 +25,8 @@ import {
 } from '@floway-dev/provider';
 
 const ANTHROPIC_ANTHROPIC_MESSAGES_ENDPOINT = 'https://api.anthropic.com/v1/messages?beta=true';
+const STREAM_DIAGNOSTIC_FRAME_LIMIT = 3;
+const STREAM_DIAGNOSTIC_FRAME_DATA_CHARS = 256;
 
 export interface CallClaudeCodeAnthropicMessagesOptions {
   upstreamId: string;
@@ -59,38 +64,57 @@ const synthetic429 = (message: string, retryAtIso: string | null, now: Date): Re
   );
 };
 
-// `anthropic-ratelimit-unified-status: rejected` paired with a future
-// `unified-reset` timestamp means the upstream's primary plan window is
-// exhausted and a fresh request would 429 right away; short-circuit at
-// the gate so we don't burn an OAuth refresh on a request that has no
-// chance.
-//
-// Note 1: `overage.status: rejected` (typically paired with
-// `overage-disabled-reason: out_of_credits`) is NOT a short-circuit
-// signal. It only reports that the account has no extra-usage credits
-// to spill into once the primary window runs out — which is the steady
-// state for any plan-tier account that hasn't bought extra credits, so
-// blocking on it would refuse every request to such accounts. The
-// primary `status` already reflects whether the upstream will actually
-// reject the next request.
-//
-// Note 2: a primary `status: rejected` WITHOUT a `reset` is treated as
-// non-gating. Sub2api `ratelimit_service.go:953-961` flags this exact
-// shape as "likely not a real rate limit" (e.g. an "Extra usage required"
-// body sentinel) and passes it through verbatim — without a reset we'd
-// otherwise lock the account out indefinitely because the next request
-// never fires to refresh the snapshot.
-const isRateLimitedNow = (
-  snapshot: ClaudeCodeQuotaSnapshot | null,
-  now: Date,
-): snapshot is ClaudeCodeQuotaSnapshot => {
-  if (!snapshot) return false;
-  if (snapshot.status !== 'rejected') return false;
-  if (!snapshot.reset) return false;
-  return new Date(snapshot.reset).getTime() > now.getTime();
+const oneLineError = (error: unknown): string => {
+  const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+  return message.length > 512 ? `${message.slice(0, 509)}...` : message;
 };
 
-const persistQuotaSnapshot = async (upstreamId: string, snapshot: ClaudeCodeQuotaSnapshot): Promise<void> => {
+interface StreamDiagnosticFrame {
+  event: string | null;
+  data: string;
+}
+
+const observedClaudeCodeMessagesStream = async function* (
+  events: AsyncIterable<ProtocolFrame<AnthropicMessagesStreamEventEx>>,
+  options: {
+    upstreamId: string;
+    model: string;
+    headers: Headers;
+    signal: AbortSignal | undefined;
+    frames: StreamDiagnosticFrame[];
+    rawFrameCount: () => number;
+  },
+): AsyncGenerator<ProtocolFrame<AnthropicMessagesStreamEventEx>> {
+  let terminalEvent: 'message_stop' | 'error' | null = null;
+  let streamError: unknown;
+  try {
+    for await (const frame of events) {
+      if (frame.type === 'event') {
+        if (frame.event.type === 'message_stop') terminalEvent = 'message_stop';
+        else if (frame.event.type === 'error') terminalEvent = 'error';
+      }
+      yield frame;
+    }
+  } catch (error) {
+    streamError = error;
+    throw error;
+  } finally {
+    if (options.signal?.aborted || (terminalEvent !== null && streamError === undefined)) return;
+    logWarn('claude_code_messages_stream_incomplete', {
+      upstream_id: options.upstreamId,
+      model: options.model,
+      request_id: options.headers.get('request-id'),
+      cf_ray: options.headers.get('cf-ray'),
+      trace_response: options.headers.get('traceresponse'),
+      raw_sse_frames: options.rawFrameCount(),
+      terminal_event: terminalEvent,
+      error: streamError === undefined ? null : oneLineError(streamError),
+      last_sse_frames: JSON.stringify(options.frames),
+    });
+  }
+};
+
+const persistQuotaSnapshot = async (upstreamId: string, modelId: string, snapshot: ClaudeCodeQuotaSnapshot): Promise<void> => {
   // Stamped before the write: the mutator is replayed on a lost race and must
   // return the same document each time, and this records when the snapshot was
   // observed rather than which attempt landed it.
@@ -104,9 +128,10 @@ const persistQuotaSnapshot = async (upstreamId: string, snapshot: ClaudeCodeQuot
     previousAccount = state.accounts[0];
     return replaceSoleAccount(state, account => ({
       ...account,
-      quotaSnapshot: { fetchedAt, data: snapshot },
+      quotaSnapshot: { fetchedAt, modelId, data: snapshot },
     }));
   });
+  await recordUpstreamMetrics(upstreamId, claudeCodeQuotaMetrics(snapshot), fetchedAt);
   const priorStatus = previousAccount.quotaSnapshot === null ? null : previousAccount.quotaSnapshot.data.status;
   // Emit only on transition. Persisting every response would flood the log
   // with one event per request; the dashboard already reads the snapshot
@@ -120,6 +145,7 @@ const persistQuotaSnapshot = async (upstreamId: string, snapshot: ClaudeCodeQuot
       to_status: snapshot.status,
       reset_at_iso: snapshot.reset,
       representative_claim: snapshot.representativeClaim,
+      model: modelId,
     });
   }
 };
@@ -138,12 +164,13 @@ const persistQuotaSnapshot = async (upstreamId: string, snapshot: ClaudeCodeQuot
 // — and tests can observe it by awaiting a microtask flush.
 const persistQuotaFromHeadersFireAndForget = (
   upstreamId: string,
+  modelId: string,
   headers: Headers,
   waitUntil: ((promise: Promise<unknown>) => void) | undefined,
 ): void => {
   const snapshot = parseClaudeCodeQuotaHeaders(headers);
   if (Object.keys(snapshot.raw).length === 0) return;
-  const persist = persistQuotaSnapshot(upstreamId, snapshot).catch(error => {
+  const persist = persistQuotaSnapshot(upstreamId, modelId, snapshot).catch(error => {
     logWarn('claude_code_quota_persist_failed', {
       upstream_id: upstreamId,
       error: String(error),
@@ -292,7 +319,7 @@ const maybePersistTerminalFromBodyFireAndForget = (
 const syntheticReturn = (
   upstreamModelId: string,
   response: Response,
-): ProviderStreamResult<AnthropicMessagesStreamEvent> => ({
+): ProviderStreamResult<AnthropicMessagesStreamEventEx> => ({
   ok: false,
   modelKey: upstreamModelId,
   response,
@@ -304,7 +331,7 @@ const syntheticReturn = (
 const ensureOrSession503 = async (
   opts: CallClaudeCodeAnthropicMessagesOptions,
   upstreamModelId: string,
-): Promise<EnsuredAccessToken | ProviderStreamResult<AnthropicMessagesStreamEvent>> => {
+): Promise<EnsuredAccessToken | ProviderStreamResult<AnthropicMessagesStreamEventEx>> => {
   try {
     return await ensureClaudeCodeAccessToken({
       upstreamId: opts.upstreamId,
@@ -322,7 +349,7 @@ const ensureOrSession503 = async (
 
 export const callClaudeCodeAnthropicMessages = async (
   opts: CallClaudeCodeAnthropicMessagesOptions,
-): Promise<ProviderStreamResult<AnthropicMessagesStreamEvent>> => {
+): Promise<ProviderStreamResult<AnthropicMessagesStreamEventEx>> => {
   // `opts.model.id` is the public alias on the catalog; the dated upstream id
   // Anthropic expects on the wire — and that the pricing table keys by — rides
   // on `opts.model.providerData.upstreamModelId`. Resolve once so synthetic
@@ -341,12 +368,12 @@ export const callClaudeCodeAnthropicMessages = async (
     ));
   }
 
+  // A cached quota deadline avoids refreshing credentials for a deferred request.
   const now = new Date();
-  const quotaData = account.quotaSnapshot === null ? null : account.quotaSnapshot.data;
-  if (isRateLimitedNow(quotaData, now)) {
-    const resetIso = quotaData.reset;
+  const resetIso = claudeCodeRateLimitedUntil(account.quotaSnapshot, now.getTime(), upstreamModelId);
+  if (resetIso !== null) {
     return syntheticReturn(upstreamModelId, synthetic429(
-      resetIso ? `Claude Code upstream rate-limited until ${resetIso}` : 'Claude Code upstream rate-limited',
+      `Claude Code upstream rate-limited until ${resetIso}`,
       resetIso,
       now,
     ));
@@ -363,7 +390,20 @@ const performUpstreamCall = async (
   upstreamModelId: string,
   accessToken: EnsuredAccessToken,
   alreadyRetried: boolean,
-): Promise<ProviderStreamResult<AnthropicMessagesStreamEvent>> => {
+): Promise<ProviderStreamResult<AnthropicMessagesStreamEventEx>> => {
+  let responseHeaders: Headers | undefined;
+  let rawSseFrameCount = 0;
+  const rawSseFrames: StreamDiagnosticFrame[] = [];
+  const observeRawSseFrame = (frame: SseFrame): void => {
+    rawSseFrameCount += 1;
+    rawSseFrames.push({
+      event: frame.event ?? null,
+      data: frame.data.length > STREAM_DIAGNOSTIC_FRAME_DATA_CHARS
+        ? `${frame.data.slice(0, STREAM_DIAGNOSTIC_FRAME_DATA_CHARS - 3)}...`
+        : frame.data,
+    });
+    if (rawSseFrames.length > STREAM_DIAGNOSTIC_FRAME_LIMIT) rawSseFrames.shift();
+  };
   let headers: Record<string, string>;
   if (opts.shaped) {
     // The gateway already reduced ordinary headers to the Claude Code module's
@@ -393,6 +433,7 @@ const performUpstreamCall = async (
     body: jsonRequestBody(wireBody),
     signal: opts.signal,
   })).then(response => {
+    responseHeaders = response.headers;
     // `opts.call.waitUntil` is set by the gateway on Workers so the
     // runtime keeps the worker alive past the response (without it, the
     // persist promise gets cancelled the moment the response returns).
@@ -403,7 +444,7 @@ const performUpstreamCall = async (
     // limited gate above stays accurate as the window evolves. Other
     // statuses (4xx/5xx outside 429) carry no quota signal so we skip them.
     if (response.ok || response.status === 429) {
-      persistQuotaFromHeadersFireAndForget(opts.upstreamId, response.headers, waitUntil);
+      persistQuotaFromHeadersFireAndForget(opts.upstreamId, upstreamModelId, response.headers, waitUntil);
     }
     // 400 / 403 may carry the credential-class terminal sentinels — the
     // detector is body-shape-defensive and only flips on a real match, so
@@ -412,7 +453,12 @@ const performUpstreamCall = async (
     return response;
   });
 
-  const result = await streamingProviderCall(upstreamFetch, parseAnthropicMessagesStream, upstreamModelId, opts.signal);
+  const result = await streamingProviderCall(
+    upstreamFetch,
+    (body, parserOptions) => parseAnthropicMessagesStream(body, { ...parserOptions, onSseFrame: observeRawSseFrame }),
+    upstreamModelId,
+    opts.signal,
+  );
 
   if (!result.ok && result.response.status === 401 && !accessToken.freshlyMinted && !alreadyRetried) {
     // Cached token rejected; invalidate so the next mint reads stale=null,
@@ -429,5 +475,16 @@ const performUpstreamCall = async (
     return await performUpstreamCall(opts, upstreamModelId, ensured, true);
   }
 
-  return result;
+  if (!result.ok) return result;
+  return {
+    ...result,
+    events: observedClaudeCodeMessagesStream(result.events, {
+      upstreamId: opts.upstreamId,
+      model: upstreamModelId,
+      headers: responseHeaders ?? result.headers ?? new Headers(),
+      signal: opts.signal,
+      frames: rawSseFrames,
+      rawFrameCount: () => rawSseFrameCount,
+    }),
+  };
 };

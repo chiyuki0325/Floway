@@ -7,7 +7,7 @@ import {
   parseStoredJson,
   preserveDecodedStoredJsonProperties,
 } from './stored-json.ts';
-import { BILLING_METRICS, MODEL_KINDS, RERANK_PROTOCOLS, parseNonNegativeDecimalString } from '@floway-dev/protocols/common';
+import { BILLING_METRICS, DECISION_PROTOCOLS, MODEL_KINDS, RERANK_PROTOCOLS, parseNonNegativeDecimalString } from '@floway-dev/protocols/common';
 import type { ModelPrefixConfig, ProxyFallbackEntry, UpstreamModelsCache } from '@floway-dev/provider';
 import { OPTIONAL_FLAG_IDS } from '@floway-dev/provider/flags';
 
@@ -26,6 +26,7 @@ const endpointsSchema = z.object({
   openaiImagesEdits: endpointSchema.optional(),
   openaiAudioTranscriptions: endpointSchema.optional(),
   rerank: endpointSchema.optional(),
+  decision: endpointSchema.optional(),
 }).passthrough();
 
 const limitsSchema = z.object({
@@ -36,12 +37,12 @@ const limitsSchema = z.object({
 
 const chatSchema = z.object({
   modalities: z.object({
-    input: z.array(z.enum(['text', 'image', 'audio'])),
-    output: z.array(z.enum(['text', 'image', 'audio'])),
+    input: z.array(z.enum(['text', 'image'])),
+    output: z.array(z.enum(['text', 'image'])),
   }).passthrough().optional(),
   image_detail_original: z.boolean().optional(),
   reasoning: z.object({
-    effort: z.object({ supported: z.array(z.string()), default: z.string().optional() }).passthrough().optional(),
+    effort: z.object({ supported: z.array(z.string()), default: z.string() }).passthrough().optional(),
     budget_tokens: z.object({ min: z.number().optional(), max: z.number().optional() }).passthrough().optional(),
     adaptive: z.boolean().optional(),
     mandatory: z.boolean().optional(),
@@ -68,8 +69,13 @@ const pricingSchema = z.object({
 }).passthrough();
 
 const flagOverridesSchema = z.partialRecord(z.enum(OPTIONAL_FLAG_IDS), z.boolean());
+const opaqueBlobCompatibilityScopeSchema = z.object({
+  bindToUpstream: z.boolean(),
+  key: z.string().min(1).optional(),
+}).strict();
 const providerModelSchema = z.object({
   id: z.string(),
+  upstreamModelId: z.string(),
   display_name: z.string().optional(),
   owned_by: z.string().optional(),
   created: z.number().optional(),
@@ -78,12 +84,38 @@ const providerModelSchema = z.object({
   pricing: pricingSchema.optional(),
   chat: chatSchema.optional(),
   endpoints: endpointsSchema,
+  opaqueBlobCompatibilityScope: opaqueBlobCompatibilityScopeSchema,
   providerData: opaqueJsonSchema.optional(),
   rerankTarget: z.object({
     protocol: z.enum(RERANK_PROTOCOLS),
     path: z.string().optional(),
   }).passthrough().optional(),
+  decisionTarget: z.object({
+    protocol: z.enum(DECISION_PROTOCOLS),
+    path: z.string().optional(),
+  }).passthrough().optional(),
   enabledFlags: z.array(z.enum(OPTIONAL_FLAG_IDS)).transform(flags => new Set(flags)),
+  flagOverrides: flagOverridesSchema.optional(),
+}).passthrough();
+
+const discoveredModelSchema = z.object({
+  upstreamModelId: z.string(),
+  publicModelId: z.string().optional(),
+  display_name: z.string().optional(),
+  limits: limitsSchema.optional(),
+  kind: z.enum(MODEL_KINDS),
+  pricing: pricingSchema.optional(),
+  chat: chatSchema.optional(),
+  endpoints: endpointsSchema,
+  opaqueBlobCompatibilityScope: opaqueBlobCompatibilityScopeSchema.optional(),
+  rerankTarget: z.object({
+    protocol: z.enum(RERANK_PROTOCOLS),
+    path: z.string().optional(),
+  }).passthrough().optional(),
+  decisionTarget: z.object({
+    protocol: z.enum(DECISION_PROTOCOLS),
+    path: z.string().optional(),
+  }).passthrough().optional(),
   flagOverrides: flagOverridesSchema.optional(),
 }).passthrough();
 
@@ -91,7 +123,8 @@ const modelsCacheSchema = z.object({
   revision: z.number(),
   fetchedAt: z.number(),
   models: z.array(providerModelSchema),
-  lastError: z.object({ message: z.string(), at: z.number() }).passthrough().nullable(),
+  discovered: z.array(discoveredModelSchema).optional(),
+  lastError: z.object({ message: z.string(), at: z.number(), failureCount: z.number().int().positive() }).passthrough().nullable(),
 }).passthrough();
 const modelsCacheEnvelopeSchema = z.object({ revision: z.number() }).passthrough();
 

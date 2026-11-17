@@ -1,6 +1,7 @@
 import { test } from 'vitest';
 
-import { buildCustomUpstreamRecord, requestApp, setupAppTest, sseOpenAIChatCompletionsResponse, sseAnthropicMessagesResponse } from '../../test-utils/app.ts';
+import { saveUpstreamForTest } from '../../repo/upstreams.ts';
+import { buildCustomUpstreamRecord, requestAppWithWarmModels, setupAppTest, sseOpenAIChatCompletionsResponse, sseAnthropicMessagesResponse } from '../../test-utils/app.ts';
 import { clearInProcessCopilotTokenCache } from '@floway-dev/provider-copilot';
 import { assertEquals, assertExists, jsonResponse, withMockedFetch } from '@floway-dev/test-utils';
 
@@ -17,7 +18,7 @@ const INGRESS_HEADERS_RULES = [
 const registerUpstream = async (repo: Awaited<ReturnType<typeof setupAppTest>>['repo']): Promise<void> => {
   await repo.upstreams.deleteAll();
   clearInProcessCopilotTokenCache();
-  await repo.upstreams.save(buildCustomUpstreamRecord({
+  await saveUpstreamForTest(repo.upstreams, buildCustomUpstreamRecord({
     id: 'up_rules',
     config: {
       baseUrl: 'https://custom.example.com',
@@ -76,7 +77,7 @@ const CASES: RouteCase[] = [
     upstreamPath: '/v1/chat/completions',
     upstreamResponse: () => sseOpenAIChatCompletionsResponse({
       id: 'chatcmpl_1', model: 'chat-model', created: 1,
-      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      choices: [{ logprobs: null, index: 0, message: { refusal: null, role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }),
   },
@@ -88,7 +89,7 @@ const CASES: RouteCase[] = [
     upstreamPath: '/v1/chat/completions',
     upstreamResponse: () => sseOpenAIChatCompletionsResponse({
       id: 'chatcmpl_2', model: 'chat-model', created: 1,
-      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      choices: [{ logprobs: null, index: 0, message: { refusal: null, role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }),
   },
@@ -100,7 +101,7 @@ const CASES: RouteCase[] = [
     upstreamPath: '/v1/chat/completions',
     upstreamResponse: () => sseOpenAIChatCompletionsResponse({
       id: 'chatcmpl_3', model: 'chat-model', created: 1,
-      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      choices: [{ logprobs: null, index: 0, message: { refusal: null, role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }),
   },
@@ -124,7 +125,19 @@ const CASES: RouteCase[] = [
     upstreamPath: '/v1/chat/completions',
     upstreamResponse: () => sseOpenAIChatCompletionsResponse({
       id: 'chatcmpl_4', model: 'chat-model', created: 1,
-      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      choices: [{ logprobs: null, index: 0, message: { refusal: null, role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }),
+  },
+  {
+    name: '/v1 Gemini translates onto a Chat Completions upstream',
+    path: '/v1/models/chat-model:generateContent',
+    contentType: 'application/json',
+    body: () => JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }] }),
+    upstreamPath: '/v1/chat/completions',
+    upstreamResponse: () => sseOpenAIChatCompletionsResponse({
+      id: 'chatcmpl_4v1', model: 'chat-model', created: 1,
+      choices: [{ logprobs: null, index: 0, message: { refusal: null, role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }),
   },
@@ -203,7 +216,7 @@ for (const routeCase of CASES) {
         observed = request.headers;
         return routeCase.upstreamResponse();
       },
-      () => requestApp(routeCase.path, {
+      () => requestAppWithWarmModels(routeCase.path, {
         method: 'POST',
         headers: clientHeaders(apiKey.key, routeCase.contentType),
         body: routeCase.body(),

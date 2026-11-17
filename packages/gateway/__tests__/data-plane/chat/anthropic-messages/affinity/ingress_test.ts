@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 
 import { analyzeAnthropicMessagesAffinity } from '../../../../../src/data-plane/chat/anthropic-messages/affinity/ingress.ts';
-import { AffinityCodec, type AffinityTarget } from '../../../../../src/data-plane/chat/shared/affinity/index.ts';
+import { AffinityCodec, type AffinityIdentity } from '../../../../../src/data-plane/chat/shared/affinity/index.ts';
 import { acceptedAffinityEvaluation } from '../../shared/affinity/helpers.ts';
 import type { ModelCandidate } from '@floway-dev/provider';
 import { stubModelCandidate } from '@floway-dev/test-utils';
@@ -16,13 +16,14 @@ const candidate = (upstream: string): ModelCandidate => {
   });
 };
 
-const targetFor = (value: ModelCandidate): AffinityTarget => ({
+const targetFor = (value: ModelCandidate): AffinityIdentity => ({
   upstreamId: value.provider.upstreamId,
   modelId: value.model.id,
   ...(value.rules !== undefined ? { rules: value.rules } : {}),
+  opaqueBlobCompatibilityIdentity: { upstreamId: value.provider.upstreamId, key: value.model.id },
 });
 
-test('removes synthetic blocks and strips incompatible signatures without hiding thinking', async () => {
+test('removes thinking and redacted blocks whose affinity belongs to another candidate', async () => {
   const candidateA = candidate('upstream-a');
   const candidateB = candidate('upstream-b');
   const signature = await codec.wrap('signature', targetFor(candidateA), 'anthropic-messages.thinking.signature');
@@ -35,7 +36,7 @@ test('removes synthetic blocks and strips incompatible signatures without hiding
       content: [
         { type: 'thinking', thinking: 'visible reasoning', signature },
         { type: 'redacted_thinking', data: synthetic },
-        { type: 'text', text: 'answer' },
+        { citations: null, type: 'text', text: 'answer' },
       ],
     }],
   }, codec);
@@ -44,16 +45,44 @@ test('removes synthetic blocks and strips incompatible signatures without hiding
     role: 'assistant',
     content: [
       { type: 'thinking', thinking: 'visible reasoning', signature: 'signature' },
-      { type: 'text', text: 'answer' },
+      { citations: null, type: 'text', text: 'answer' },
     ],
   });
   expect(acceptedAffinityEvaluation(prepared, candidateB).materialize().messages[0]).toEqual({
     role: 'assistant',
     content: [
-      { type: 'thinking', thinking: 'visible reasoning' },
-      { type: 'text', text: 'answer' },
+      { citations: null, type: 'text', text: 'answer' },
     ],
   });
+});
+
+test('strips the marker from thinking that never carried a signature on every candidate', async () => {
+  const candidateA = candidate('upstream-a');
+  const candidateB = candidate('upstream-b');
+  const marker = await codec.wrap(undefined, targetFor(candidateA), 'anthropic-messages.thinking.signature');
+  const prepared = await analyzeAnthropicMessagesAffinity({
+    model: 'model',
+    max_tokens: 100,
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'visible reasoning', signature: marker },
+        { citations: null, type: 'text', text: 'answer' },
+      ],
+    }],
+  }, codec);
+
+  for (const target of [candidateA, candidateB]) {
+    const evaluation = acceptedAffinityEvaluation(prepared, target);
+    expect(evaluation.degrades).toBe(false);
+    expect(evaluation.materialize().messages[0]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'visible reasoning' },
+        { citations: null, type: 'text', text: 'answer' },
+      ],
+    });
+  }
 });
 
 test('removes assistant messages emptied by affinity block stripping', async () => {

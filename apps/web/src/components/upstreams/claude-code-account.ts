@@ -2,12 +2,13 @@
 // across header and probe sources, because the SDK keeps the windows separate:
 // https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/src/claude_agent_sdk/types.py#L1270-L1300
 
-import { FIVE_HOUR_WINDOW_MINUTES, HEAVY_USAGE_THRESHOLD_PERCENT, heaviestPercent, SEVEN_DAY_WINDOW_MINUTES } from './subscription-quota';
+import { FIVE_HOUR_WINDOW_MINUTES, heaviestPercent, SEVEN_DAY_WINDOW_MINUTES, type UsageHeavyOrActive, usageStatusFromHeaviest } from './subscription-quota';
 import type {
   ClaudeCodeAccountCredentialSummary,
   ClaudeCodeQuotaWindow,
   UpstreamRecord,
 } from '../../api/types';
+import { claudeCodeRateLimitedUntil } from '@floway-dev/provider-claude-code/browser';
 
 export type ClaudeCodeRecord = Extract<UpstreamRecord, { kind: 'claude-code' }>;
 
@@ -141,43 +142,23 @@ export const quotaWindows = (credential: ClaudeCodeAccountCredentialSummary | nu
   return rows;
 };
 
-export type AccountStatus =
-  | { tone: 'danger'; reason: 'uuid-mismatch' | 'session-terminated' | 'refresh-failed' | 'exhausted'; detail?: string }
-  | { tone: 'warning'; reason: 'heavy'; percent: number }
-  | { tone: 'success'; reason: 'active' };
+type ClaudeCodeDangerStatus =
+  | { tone: 'danger'; reason: 'uuid-mismatch' | 'session-terminated' | 'refresh-failed' | 'exhausted'; detail?: string };
 
-// When the account stops refusing work, or null if it is not refusing any, on
-// the same terms the data plane uses to decide whether to send it any: a
-// rejection dated in the past has lifted, and one reported without a date at all
-// is not treated as a limit, because the snapshot is only rewritten by a
-// response and an upstream nobody calls would otherwise stay locked out forever.
-// Both surfaces that show this state read it here, so neither can disagree with
-// the router.
-//
-// It answers with the instant rather than a yes, because every caller that wants
-// the answer also wants to say how long the wait has left.
+export type AccountStatus = ClaudeCodeDangerStatus | UsageHeavyOrActive;
+
 export const rateLimitedUntil = (
   quota: ClaudeCodeAccountCredentialSummary['quotaSnapshot'] | null | undefined,
   now: number,
-): string | null => {
-  const data = quota?.data;
-  if (data?.status !== 'rejected' || !data.reset) return null;
-  return Date.parse(data.reset) > now ? data.reset : null;
-};
+): string | null => claudeCodeRateLimitedUntil(quota, now);
 
 export const accountStatus = (lookup: CredentialLookup, windows: WindowRow[], now: number): AccountStatus => {
   if (lookup.kind === 'uuid-mismatch') return { tone: 'danger', reason: 'uuid-mismatch' };
   const { credential } = lookup;
   if (credential.state === 'session_terminated') return { tone: 'danger', reason: 'session-terminated', detail: credential.stateMessage };
   if (credential.state === 'refresh_failed') return { tone: 'danger', reason: 'refresh-failed', detail: credential.stateMessage };
-  // `rejected` on the primary status means a limit was hit; overage is a
-  // separate optional window. The snapshot is held until a response replaces
-  // it, so this asks whether the limit is still running rather than whether one
-  // was ever reported -- the data plane draws the line at the same instant.
   if (rateLimitedUntil(credential.quotaSnapshot, now) !== null) return { tone: 'danger', reason: 'exhausted' };
-  const heaviest = heaviestPercent(windows.map(row => row.percent));
-  if (heaviest !== null && heaviest >= HEAVY_USAGE_THRESHOLD_PERCENT) return { tone: 'warning', reason: 'heavy', percent: Math.round(heaviest) };
-  return { tone: 'success', reason: 'active' };
+  return usageStatusFromHeaviest(heaviestPercent(windows.map(row => row.percent)));
 };
 
 // Rejected optional overage pairs with `out_of_credits`, which is not actionable:

@@ -16,9 +16,10 @@
 
 import { resolveCodexCatalog, type CatalogModel, type CodexCatalog, type CodexCatalogCapabilities, type CodexServiceTier } from './catalog.ts';
 import { synthesizeCatalogEntry } from './synthesize.ts';
+import type { ModelsRefreshScheduler } from '../../execution/models-refresh.ts';
+import type { User } from '../../repo/types.ts';
 import { enumerateAddressableModelIds, type AddressableIdEntry } from '../shared/listing/addressable.ts';
-import type { BackgroundScheduler } from '@floway-dev/platform';
-import type { Fetcher } from '@floway-dev/provider';
+import { chatgptModelContextWindow } from '@floway-dev/provider-chatgpt';
 
 // Pure transformation: client catalog + addressable entries →
 // codex-shaped catalog (drops unlisted alternates and non-chat kinds).
@@ -55,20 +56,30 @@ export const assembleCodexCatalog = (
     // request time but never surface as their own picker row.
     if (entry.unlisted !== undefined) continue;
     if (entry.model.kind !== 'chat') continue;
-    models.push(synthesizeCatalogEntry(entry.model, matchCatalog(entry.model.id), capabilities, catalogServiceTiers));
+    // Limits follow the registry's first-provider metadata policy. Only that
+    // provider can supply Codex's private default; a same-named model from a
+    // different provider must use its own advertised input budget.
+    const primaryUpstream = entry.upstreams[0];
+    let codexContextWindow;
+    if (primaryUpstream?.kind === 'chatgpt') {
+      const providerModel = entry.model.providerModels?.[primaryUpstream.upstreamId];
+      if (providerModel === undefined) throw new Error(`Codex catalog model ${entry.id} has no primary provider model`);
+      codexContextWindow = chatgptModelContextWindow(providerModel);
+    }
+    models.push(synthesizeCatalogEntry(entry.model, matchCatalog(entry.model.id), capabilities, catalogServiceTiers, codexContextWindow));
   }
   return { models };
 };
 
 export const loadCodexCatalog = async (
+  subject: User,
   userAgent: string | undefined,
   upstreamIds: readonly string[] | null,
-  fetcherForUpstream: (upstreamId: string) => Fetcher,
-  scheduler: BackgroundScheduler,
+  scheduleRefresh: ModelsRefreshScheduler,
 ): Promise<CodexCatalog> => {
   const [resolution, addressable] = await Promise.all([
     resolveCodexCatalog(userAgent),
-    enumerateAddressableModelIds(upstreamIds, fetcherForUpstream, scheduler),
+    enumerateAddressableModelIds(subject, upstreamIds, scheduleRefresh),
   ]);
   return assembleCodexCatalog(resolution.catalog, addressable, resolution.capabilities);
 };

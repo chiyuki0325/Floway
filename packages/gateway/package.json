@@ -23,9 +23,6 @@
     "./control-plane/upstreams/types": {
       "types": "./src/control-plane/upstreams/types.ts"
     },
-    "./data-plane/models/shared": {
-      "types": "./src/data-plane/models/shared.ts"
-    },
     "./dump-codec": {
       "import": "./src/dump/codec.ts",
       "types": "./src/dump/codec.ts"
@@ -36,6 +33,9 @@
     "./migrations-dir": {
       "import": "./src/migrations-dir.ts",
       "types": "./src/migrations-dir.ts"
+    },
+    "./browser": {
+      "types": "./src/browser.ts"
     }
   },
   "scripts": {
@@ -50,13 +50,15 @@
     "@floway-dev/provider": "workspace:*",
     "@floway-dev/provider-azure": "workspace:*",
     "@floway-dev/provider-claude-code": "workspace:*",
-    "@floway-dev/provider-codex": "workspace:*",
+    "@floway-dev/provider-chatgpt": "workspace:*",
     "@floway-dev/provider-copilot": "workspace:*",
     "@floway-dev/provider-custom": "workspace:*",
+    "@floway-dev/provider-kimi-code": "workspace:*",
     "@floway-dev/provider-ollama": "workspace:*",
     "@floway-dev/proxy": "workspace:*",
     "@floway-dev/translate": "workspace:*",
     "@hono/zod-validator": "^0.8.0",
+    "cbor-x": "^1.6.6",
     "es-toolkit": "^1.49.0",
     "hono": "^4",
     "jsonrepair": "^3.14.0",

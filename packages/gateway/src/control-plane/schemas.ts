@@ -11,16 +11,17 @@
 //
 // Deep upstream-config validation (e.g. Azure URL hostname rules, custom
 // pathOverrides and modelsFetch.endpoint URL parsing, per-model endpoint path
-// checks) intentionally stays in the handler functions — they own the
-// canonical error messages and downstream cache invalidation. The schemas
-// here describe the shape the dashboard sends.
+// checks) stays with provider validators and handlers, which own the canonical
+// error messages. Repository model-aware writes own catalog versions and
+// invalidation. The schemas here describe the shape the dashboard sends.
 
 import { z } from 'zod';
 
+import { accessPrincipalSchema, accessRecordInputSchema, accessTargetScopeSchema } from '../access-control/schemas.ts';
 import { normalizeDisabledPublicModelIds } from '../repo/disabled-public-models.ts';
 import { CUSTOM_API_KEY_MAX_LENGTH, KEY_SOURCES } from '../shared/api-key-tokens.ts';
 import { RETENTION_MAX_SECONDS, SECONDS_PER_DAY } from '../shared/retention.ts';
-import { kindForEndpoints, MODEL_KINDS, parseNonNegativeDecimalString, RERANK_PROTOCOLS, tokenUsageUnattributedUserId } from '@floway-dev/protocols/common';
+import { isTelemetryBucketGranularity, kindForEndpoints, MODEL_KINDS, parseNonNegativeDecimalString, QUOTA_DISPLAYS, RERANK_PROTOCOLS, SUPPORTED_LANGUAGES, tokenUsageUnattributedUserId, type TelemetryBucketGranularity } from '@floway-dev/protocols/common';
 import { type FlagOverrides, MODEL_PREFIX_MAX_LENGTH, MODEL_PREFIX_REGEX, parseFlagOverridesWire, UPSTREAM_HUE_DEGREES } from '@floway-dev/provider';
 
 // --- shared atoms ---
@@ -57,6 +58,7 @@ const modelEndpointsSchema = z.object({
   openaiImagesEdits: z.object({}).optional(),
   openaiAudioTranscriptions: z.object({}).optional(),
   rerank: z.object({}).optional(),
+  decision: z.object({}).optional(),
 });
 
 const priceSchema = z.string().transform((value, ctx) => {
@@ -84,7 +86,7 @@ const pricingMetricShape = {
 // deduplicate via transform. Input additionally requires 'text' to be present
 // (a multimodal model must accept text); output has no such constraint (an
 // image-generation model may emit only images).
-const modalityArraySchema = z.array(z.enum(['text', 'image', 'audio']))
+const modalityArraySchema = z.array(z.enum(['text', 'image']))
   .min(1)
   .transform(arr => Array.from(new Set(arr)));
 
@@ -141,6 +143,11 @@ const limitsSchema = z.object({
   max_output_tokens: z.number().optional(),
 });
 
+const opaqueBlobCompatibilityScopeSchema = z.object({
+  bindToUpstream: z.boolean(),
+  key: z.string().min(1).optional(),
+}).strict();
+
 // Mirrors the runtime UpstreamModelConfig in @floway-dev/provider.
 // Azure, custom, and ollama upstreams share this per-model entry; the
 // canonical per-model endpoint validation lives in the runtime validator.
@@ -163,6 +170,7 @@ const upstreamModelSchema = z.object({
   flagOverrides: flagOverridesSchema.optional(),
   limits: limitsSchema.optional(),
   chat: chatSchema.optional(),
+  opaqueBlobCompatibilityScope: opaqueBlobCompatibilityScopeSchema.optional(),
 }).refine(
   m => m.chat === undefined || m.kind === undefined || m.kind === 'chat',
   { message: "chat metadata only allowed when kind === 'chat'", path: ['chat'] },
@@ -205,6 +213,11 @@ const azureConfigSchema = z.object({
   path: ['models'],
 });
 
+const kimiCodeConfigSchema = z.object({
+  region: z.enum(['china', 'overseas']),
+  apiKey: z.string().min(1),
+});
+
 const ollamaConfigSchema = z.object({
   baseUrl: z.string().min(1),
   // Optional: required against ollama.com, typically absent for a private
@@ -241,28 +254,60 @@ export const USERNAME_PATTERN = /^[a-zA-Z0-9_.\-]{1,64}$/;
 
 const usernameSchema = z.string().regex(USERNAME_PATTERN, 'username must be 1-64 chars of [A-Za-z0-9_.-]');
 
-// null leaves this level unrestricted; an empty list grants no upstreams.
-const upstreamIdsValueSchema = z.array(z.string().min(1))
-  .refine(arr => new Set(arr).size === arr.length, { message: 'upstreamIds contains duplicates' })
-  .nullable();
-
 export const createUserBody = z.object({
   username: usernameSchema,
   password: passwordSchema,
   isAdmin: z.boolean().optional(),
-  upstreamIds: upstreamIdsValueSchema.optional(),
+  groupIds: z.array(z.number().int().positive()).optional(),
 });
 
 export const updateUserBody = z.object({
   username: usernameSchema.optional(),
   password: passwordSchema.optional(),
   isAdmin: z.boolean().optional(),
-  upstreamIds: upstreamIdsValueSchema.optional(),
+  groupIds: z.array(z.number().int().positive()).optional(),
 });
+
+const groupMemberIdsSchema = z.array(z.number().int().positive())
+  .refine(ids => new Set(ids).size === ids.length, { message: 'memberIds contains duplicates' });
+
+export const createGroupBody = z.object({
+  name: z.string().trim().min(1).max(64),
+  hue: z.number().int().min(0).max(359),
+  memberIds: groupMemberIdsSchema.optional(),
+});
+
+export const updateGroupBody = z.object({
+  name: z.string().trim().min(1).max(64).optional(),
+  hue: z.number().int().min(0).max(359).optional(),
+  memberIds: groupMemberIdsSchema.optional(),
+}).refine(body => body.name !== undefined || body.hue !== undefined || body.memberIds !== undefined, { message: 'Provide a name, hue, or memberIds to update.' });
+
+export const accessRecordBody = accessRecordInputSchema;
+
+export const resolveAccessBody = z.object({
+  principal: accessPrincipalSchema,
+  scope: accessTargetScopeSchema,
+  excludeRecordId: z.number().int().positive().optional(),
+}).strict();
+
+export const reorderAccessRecordsBody = z.object({
+  expectedIds: z.array(z.number().int().positive()).min(2),
+  ids: z.array(z.number().int().positive()).min(2),
+}).strict().refine(({ expectedIds, ids }) => new Set(expectedIds).size === expectedIds.length
+  && new Set(ids).size === ids.length && expectedIds.length === ids.length && ids.every(id => expectedIds.includes(id)),
+{ message: 'Reordering must preserve exactly the same rule IDs.' });
 
 export const changeOwnPasswordBody = z.object({
   currentPassword: passwordSchema,
   newPassword: passwordSchema,
+});
+
+export const updateOwnPreferencesBody = z.object({
+  quotaDisplay: z.enum(QUOTA_DISPLAYS).optional(),
+  language: z.enum(SUPPORTED_LANGUAGES).nullable().optional(),
+}).refine(body => body.quotaDisplay !== undefined || body.language !== undefined, {
+  error: 'Provide quotaDisplay or language',
 });
 
 // --- api keys ---
@@ -290,9 +335,13 @@ const keySourceShape = {
   custom_key: z.string().max(CUSTOM_API_KEY_MAX_LENGTH).optional(),
 };
 
+const apiKeyUpstreamIdsSchema = z.array(z.string().min(1))
+  .refine(ids => new Set(ids).size === ids.length, { message: 'upstream_ids contains duplicates' }).nullable().optional();
+
 export const createKeyBody = z.object({
   name: z.string().min(1),
-  upstream_ids: upstreamIdsValueSchema.optional(),
+  upstream_ids: apiKeyUpstreamIdsSchema,
+  randomize_upstreams: z.boolean().optional(),
   dump_retention_seconds: dumpRetentionSecondsSchema.optional(),
   responses_retention_seconds: openaiResponsesRetentionSecondsSchema.optional(),
   ...keySourceShape,
@@ -302,7 +351,8 @@ export const rotateKeyBody = z.object(keySourceShape);
 
 export const updateKeyBody = z.object({
   name: z.string().min(1).optional(),
-  upstream_ids: upstreamIdsValueSchema.optional(),
+  upstream_ids: apiKeyUpstreamIdsSchema,
+  randomize_upstreams: z.boolean().optional(),
   dump_retention_seconds: dumpRetentionSecondsSchema.optional(),
   responses_retention_seconds: openaiResponsesRetentionSecondsSchema.optional(),
 });
@@ -343,7 +393,8 @@ const upstreamHueSchema = z.number().int().min(0).max(UPSTREAM_HUE_DEGREES - 1);
 const upstreamBaseFields = {
   name: z.string().min(1),
   enabled: z.boolean().optional(),
-  sort_order: z.number().int().optional(),
+  usage_refresh_interval_minutes: z.number().int().nonnegative().optional(),
+  sort_order: z.never({ error: 'New upstreams always append after the current order.' }).optional(),
   flag_overrides: flagOverridesSchema.optional(),
   disabled_public_model_ids: disabledPublicModelIdsSchema.optional(),
   proxy_fallback_list: proxyFallbackListSchema.optional(),
@@ -353,20 +404,19 @@ const upstreamBaseFields = {
 };
 
 // Create accepts a discriminated union on `kind` for per-provider config
-// validation. `enabled` and `sort_order` are optional — the handler
-// defaults them to `true` and to one past the current max sort order
-// when omitted.
+// validation. New upstreams always append after the current order.
 export const createUpstreamBody = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('custom'), ...upstreamBaseFields, config: customConfigSchema }),
   z.object({ kind: z.literal('azure'), ...upstreamBaseFields, config: azureConfigSchema }),
-  // Copilot / Codex / Claude Code carry OAuth-derived credentials that the
+  // Copilot / ChatGPT / Claude Code carry OAuth-derived credentials that the
   // create page populates via the corresponding OAuth-exchange helper
   // before Save. `state` is accepted here as an opaque payload; the
   // per-kind assertXxxUpstreamRecord in the handler narrows it once the
   // request lands.
   z.object({ kind: z.literal('copilot'), ...upstreamBaseFields, config: z.unknown(), state: z.unknown().optional() }),
-  z.object({ kind: z.literal('codex'), ...upstreamBaseFields, config: z.unknown(), state: z.unknown().optional() }),
+  z.object({ kind: z.literal('chatgpt'), ...upstreamBaseFields, config: z.unknown(), state: z.unknown().optional() }),
   z.object({ kind: z.literal('claude-code'), ...upstreamBaseFields, config: z.unknown(), state: z.unknown().optional() }),
+  z.object({ kind: z.literal('kimi-code'), ...upstreamBaseFields, config: kimiCodeConfigSchema }),
   z.object({ kind: z.literal('ollama'), ...upstreamBaseFields, config: ollamaConfigSchema }),
 ]);
 
@@ -380,10 +430,11 @@ export const createUpstreamBody = z.discriminatedUnion('kind', [
 // without this field the schema would silently strip it and the API would
 // look like it had accepted the change.
 export const updateUpstreamBody = z.object({
-  kind: z.enum(['custom', 'azure', 'copilot', 'codex', 'claude-code', 'ollama']).optional(),
+  kind: z.enum(['custom', 'azure', 'copilot', 'chatgpt', 'claude-code', 'kimi-code', 'ollama']).optional(),
   name: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
-  sort_order: z.number().int().optional(),
+  usage_refresh_interval_minutes: z.number().int().nonnegative().optional(),
+  sort_order: z.never({ error: 'Use the upstream reorder endpoint to change sort_order.' }).optional(),
   flag_overrides: flagOverridesSchema.optional(),
   disabled_public_model_ids: disabledPublicModelIdsSchema.optional(),
   proxy_fallback_list: proxyFallbackListSchema.optional(),
@@ -392,15 +443,23 @@ export const updateUpstreamBody = z.object({
   max_concurrent_requests: z.number().int().positive().nullable().optional(),
   // Patches only carry field diffs, not per-kind shape validation — the
   // handler dispatches on the existing row's kind and enforces the shape
-  // there (Copilot/Codex/Claude Code reject a config patch outright, since
+  // there (Copilot/ChatGPT/Claude Code reject a config patch outright, since
   // OAuth-managed slices belong to the action endpoints; the rest run
   // through `assertXxxUpstreamRecord`). `z.record(z.unknown())` blocks
   // primitives / arrays / null from reaching the handler as `config`.
   config: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const reorderUpstreamsBody = z.object({
+  expectedIds: z.array(z.string().min(1)).min(2),
+  ids: z.array(z.string().min(1)).min(2),
+}).strict().refine(({ expectedIds, ids }) => new Set(expectedIds).size === expectedIds.length
+  && new Set(ids).size === ids.length && expectedIds.length === ids.length && ids.every(id => expectedIds.includes(id))
+  && ids.some((id, index) => id !== expectedIds[index]),
+{ message: 'Reordering must change the order while preserving exactly the same upstream IDs.' });
+
 // Shared envelope for the record-body action contract used by every
-// action endpoint (OAuth exchange/refresh, quota, probe, list-models,
+// action endpoint (OAuth exchange/refresh, quota, probe, draft preview,
 // etc.). The client posts its full draft record; the server reads only
 // fields relevant to the specific action (credentials in config/state,
 // proxy_fallback_list for routing) and produces a targeted patch. Kind
@@ -414,9 +473,11 @@ export const upstreamRecordEnvelope = z.object({
   proxy_fallback_list: proxyFallbackListSchema.optional(),
 }).passthrough();
 
-// The bare envelope contract — every action endpoint that takes no extras
-// beyond `record` (refresh, probe, quota, list-models) shares this shape.
 const recordOnlyBody = z.object({ record: upstreamRecordEnvelope });
+
+// Shared authorize-url contract for the ChatGPT and claude-code authorize-url
+// endpoints: the draft record plus the SPA-held PKCE challenge/state pair.
+const oauthAuthorizeUrlBody = z.object({ record: upstreamRecordEnvelope, challenge: z.string().min(1), state: z.string().min(1) });
 
 export const copilotOAuthDeviceLoginStartBody = recordOnlyBody;
 
@@ -427,7 +488,7 @@ export const copilotOAuthDeviceLoginPollBody = z.object({
 
 export const copilotQuotaBody = recordOnlyBody;
 
-// --- codex OAuth (record-body contract) ---
+// --- ChatGPT OAuth (record-body contract) ---
 //
 // PKCE state is fully SPA-held: the dashboard mints `{verifier, challenge,
 // state}` in the browser via Web Crypto, stores `{verifier, state}` in
@@ -435,25 +496,50 @@ export const copilotQuotaBody = recordOnlyBody;
 // them into the upstream's authorize URL. The server never sees the
 // verifier until the callback comes back as `{code, verifier}` on exchange.
 
-export const codexOAuthAuthorizeUrlBody = z.object({
-  record: upstreamRecordEnvelope,
-  challenge: z.string().min(1),
-  state: z.string().min(1),
+export const chatgptOAuthAuthorizeUrlBody = oauthAuthorizeUrlBody;
+
+// Preview takes no record: it reads a pasted document and reports what is in
+// it, without touching any upstream.
+export const chatgptImportPreviewBody = z.object({
+  raw_json: z.string().min(1),
 });
 
-export const codexOAuthExchangeBody = z.object({
+export const chatgptImportExchangeBody = z.object({
   record: upstreamRecordEnvelope,
-  auth_json: z.string().min(1).optional(),
+  json: z.object({
+    raw_json: z.string().min(1),
+    source_index: z.number().int().nonnegative(),
+  }).optional(),
   callback: z.object({
     code: z.string().min(1),
     verifier: z.string().min(1),
   }).optional(),
+  // Only the bearer is required. Every other field is the operator stating
+  // something the tokens cannot say, so `null` and an omitted key mean the
+  // same thing and the provider decides what a value is worth.
+  manual: z.object({
+    access_token: z.string().min(1),
+    refresh_token: z.string().nullable().optional(),
+    id_token: z.string().nullable().optional(),
+    account_id: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+    plan_type: z.string().nullable().optional(),
+    expires_at: z.union([z.number(), z.string()]).nullable().optional(),
+  }).optional(),
 }).refine(
-  b => (b.auth_json !== undefined) !== (b.callback !== undefined),
-  { message: 'Provide exactly one of auth_json or callback' },
+  b => [b.json, b.callback, b.manual].filter(value => value !== undefined).length === 1,
+  { message: 'Provide exactly one of json, callback, or manual' },
 );
 
-export const codexOAuthRefreshBody = recordOnlyBody;
+export const chatgptOAuthRefreshBody = recordOnlyBody;
+
+export const chatgptRateLimitResetCreditsBody = recordOnlyBody;
+
+export const chatgptRateLimitResetConsumeBody = z.object({
+  record: upstreamRecordEnvelope,
+  credit_id: z.string().min(1),
+  idempotency_key: z.string().min(1),
+});
 
 // --- claude-code OAuth + setup-token + probe (record-body contract) ---
 
@@ -464,11 +550,7 @@ const oauthCallbackSchema = z.object({
   state: z.string().min(1),
 });
 
-export const claudeCodeOAuthAuthorizeUrlBody = z.object({
-  record: upstreamRecordEnvelope,
-  challenge: z.string().min(1),
-  state: z.string().min(1),
-});
+export const claudeCodeOAuthAuthorizeUrlBody = oauthAuthorizeUrlBody;
 
 export const claudeCodeOAuthExchangeBody = z.object({
   record: upstreamRecordEnvelope,
@@ -481,11 +563,7 @@ export const claudeCodeOAuthExchangeBody = z.object({
 
 export const claudeCodeOAuthRefreshBody = recordOnlyBody;
 
-export const claudeCodeSetupTokenAuthorizeUrlBody = z.object({
-  record: upstreamRecordEnvelope,
-  challenge: z.string().min(1),
-  state: z.string().min(1),
-});
+export const claudeCodeSetupTokenAuthorizeUrlBody = oauthAuthorizeUrlBody;
 
 export const claudeCodeSetupTokenExchangeBody = z.object({
   record: upstreamRecordEnvelope,
@@ -494,15 +572,30 @@ export const claudeCodeSetupTokenExchangeBody = z.object({
 
 export const claudeCodeProbeBody = recordOnlyBody;
 
+// The editor sends every discovery input, including model projection policy,
+// while direct preview callers can omit unrelated display metadata.
+export const previewModelsBody = z.object({
+  record: upstreamRecordEnvelope.extend({
+    proxy_fallback_list: proxyFallbackListSchema,
+    name: z.string().optional(),
+    enabled: z.boolean().optional(),
+    usage_refresh_interval_minutes: z.number().int().nonnegative().optional(),
+    sort_order: z.number().int().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+    hue: upstreamHueSchema.optional(),
+    flag_overrides: flagOverridesSchema.optional(),
+    disabled_public_model_ids: disabledPublicModelIdsSchema.optional(),
+    model_prefix: modelPrefixSchema.optional(),
+  }),
+});
+// --- kimi-code ---
+
+export const kimiCodeUsageBody = recordOnlyBody;
+
 // --- ollama ---
 
 export const ollamaUsageBody = recordOnlyBody;
-
-// Unified live-model listing for both create-time preview and edit-time
-// refresh. Custom returns the raw upstream row (dashboard translates
-// through the draft's endpoints); every other kind returns the fully
-// projected UpstreamModelConfig catalog.
-export const listModelsBody = recordOnlyBody;
 
 // --- agent setup ---
 //
@@ -560,6 +653,9 @@ export const testProxyBody = z.object({
 export const resetBackoffBody = z.object({
   upstream_id: z.string().min(1).optional(),
 });
+
+export const proxyOptionsQuery = z.object({ upstream_id: z.string().min(1) });
+export const upstreamOptionsQuery = z.object({ view: z.enum(['key', 'audit', 'all']).optional() });
 
 // --- search config ---
 
@@ -702,10 +798,23 @@ const aliasBodyRulesRefinement = (
 export const createAliasBody = aliasBodyCore.superRefine(aliasBodyRulesRefinement);
 export const updateAliasBody = aliasBodyCore.superRefine(aliasBodyRulesRefinement);
 
+// --- site settings ---
+
+export const SITE_NAME_MAX_LENGTH = 64;
+
+// An absent or blank name is the operator clearing the override; the built-in
+// default lives in the dashboard, not in the database.
+export const siteSettingsBody = z.object({
+  site_name: z.string()
+    .max(SITE_NAME_MAX_LENGTH, { error: `site_name must be at most ${SITE_NAME_MAX_LENGTH} characters` })
+    .nullish()
+    .transform(value => value == null || value.trim() === '' ? null : value.trim()),
+});
+
 // --- data transfer ---
 
 export const importBody = z.object({
-  version: z.literal(20, { error: 'version must be 20 — older export formats are not supported; re-export from the current deployment' }),
+  version: z.literal(25, { error: 'version must be 25 — older export formats are not supported; re-export from the current deployment' }),
   mode: z.enum(['merge', 'replace'], { error: "mode must be 'merge' or 'replace'" }),
   data: z.unknown().optional(),
 });
@@ -777,7 +886,7 @@ const filterTokenUsageOverviewUserId = z.union([
 const telemetryOverviewQuery = {
   start: z.string().optional(),
   end: z.string().optional(),
-  bucket: z.enum(['hour', '4h', '8h', 'day', 'all']).optional(),
+  bucket: z.custom<TelemetryBucketGranularity>(isTelemetryBucketGranularity, 'Invalid telemetry bucket granularity').optional(),
   timezone: z.string().optional(),
   timezone_offset_minutes: z.string().optional(),
   // Cross-cutting filters applied to raw records before aggregation. Values
@@ -808,3 +917,10 @@ export const performanceQuery = z.object({
   filter_operation: filterValues(z.string()),
   filter_runtime_location: filterValues(z.string()),
 });
+
+export const upstreamMetricsQuery = z.object({
+  upstream_id: z.string().min(1),
+  start: z.string().regex(/^-?\d+$/).transform(Number).pipe(z.number().int()),
+  end: z.string().regex(/^-?\d+$/).transform(Number).pipe(z.number().int()),
+  step: z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().positive()),
+}).refine(query => query.end > query.start, { message: 'Metrics interval end must be later than start' });

@@ -19,14 +19,16 @@ export interface OpenAIChatCompletionsServeGenerateArgs {
 export const openaiChatCompletionsServe = {
   generate: async (args: OpenAIChatCompletionsServeGenerateArgs): Promise<ExecuteResult<ProtocolFrame<OpenAIChatCompletionsStreamEvent>>> => {
     const { payload, ctx, headers } = args;
-    const affinity = await analyzeOpenAIChatCompletionsAffinity(payload, ctx.affinity.codec);
     const { candidates: enumerated, sawModel, failedUpstreams } = await enumerateModelCandidates({
+      subject: ctx.user,
       upstreamIds: ctx.upstreamIds,
+      randomizeUpstreams: ctx.randomizeUpstreams,
       model: payload.model,
       kind: 'chat',
       scheduler: ctx.backgroundScheduler,
       runtimeLocation: ctx.runtimeLocation,
     });
+    const affinity = await analyzeOpenAIChatCompletionsAffinity(payload, ctx.affinity.codec);
     const viable = enumerated.filter(c => openaiChatCompletionsTarget.canServe(c.model.endpoints));
     const selection = selectAffinityCandidates(viable, affinity);
     if ('kind' in selection) return renderOpenAIChatCompletionsFailure(selection);

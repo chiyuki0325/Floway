@@ -1,5 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
+import { requireNamedTestFiles } from '../../tools/src/verification-scope.ts';
+
+requireNamedTestFiles();
+
 export default defineConfig({
   test: {
     environment: 'node',
@@ -12,6 +16,7 @@ export default defineConfig({
       // compatible stub so the platform-cloudflare unit tests can import
       // `DurableObject` without the workerd runtime present.
       'cloudflare:workers': new URL('./__tests__/test-utils/cloudflare-workers-stub.ts', import.meta.url).pathname,
+      'cloudflare:sockets': new URL('./__tests__/test-utils/cloudflare-sockets-stub.ts', import.meta.url).pathname,
     },
   },
 });

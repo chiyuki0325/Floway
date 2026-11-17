@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import bundledCatalog from '../../../src/data-plane/codex/catalog/bundled.json' with { type: 'json' };
 
-const bundled = bundledCatalog as { models: { slug: string; minimal_client_version?: string; supports_experimental_context?: boolean; use_responses_lite?: boolean }[] };
+const bundled = bundledCatalog as { models: { slug: string }[] };
 
 describe('resolveCodexCatalog', () => {
   const originalFetch = globalThis.fetch;
@@ -11,6 +11,18 @@ describe('resolveCodexCatalog', () => {
   });
   afterEach(() => {
     globalThis.fetch = originalFetch;
+  });
+
+  it('bundles the current GPT-6.1 Sol catalog entry for offline fallback', () => {
+    const sol = bundled.models.find(model => model.slug === 'gpt-6.1-sol') as Record<string, unknown> | undefined;
+    expect(sol).toMatchObject({
+      display_name: 'GPT-6.1-Sol',
+      context_window: 272000,
+      max_context_window: 872000,
+      default_reasoning_level: 'low',
+      minimal_client_version: '0.153.0',
+    });
+    expect(bundled.models.map(model => model.slug)).toEqual(expect.arrayContaining(['gpt-6-sol', 'gpt-6-luna']));
   });
 
   it.each([
@@ -33,15 +45,6 @@ describe('resolveCodexCatalog', () => {
   ])('does not classify a non-Codex catalog caller %s', async userAgent => {
     const { isCodexUserAgent } = await import('../../../src/data-plane/codex/catalog.ts');
     expect(isCodexUserAgent(userAgent)).toBe(false);
-  });
-
-  it('bundles the Responses Lite catalog shipped with Codex 0.156.0', () => {
-    expect(bundled.models).toContainEqual(expect.objectContaining({
-      slug: 'gpt-6-astra',
-      minimal_client_version: '0.153.0',
-      supports_experimental_context: true,
-      use_responses_lite: true,
-    }));
   });
 
   it('falls back to bundled when user-agent is missing', async () => {

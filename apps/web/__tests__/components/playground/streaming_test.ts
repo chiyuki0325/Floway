@@ -88,8 +88,8 @@ describe('playground wire requests', () => {
       path: '/v1/chat/completions',
       custom: { seed: 9 },
       events: [
-        { id: 'chat_1', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }] },
-        { id: 'chat_1', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+        { id: 'chat_1', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{  index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }] },
+        { id: 'chat_1', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{  index: 0, delta: {}, finish_reason: 'stop' }] },
         '[DONE]',
       ],
     },
@@ -99,7 +99,7 @@ describe('playground wire requests', () => {
       path: '/v1/messages',
       custom: { metadata: { test: true } },
       events: [
-        { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'test-model', content: [], stop_reason: null, stop_sequence: null, usage: {} } },
+        { type: 'message_start', message: { container: null, diagnostics: null, stop_details: null, id: 'msg_1', type: 'message', role: 'assistant', model: 'test-model', content: [], stop_reason: null, stop_sequence: null, usage: { cache_creation: null, cache_creation_input_tokens: null, cache_read_input_tokens: null, inference_geo: null, output_tokens_details: null, server_tool_use: null, service_tier: null } } },
         { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
         { type: 'content_block_stop', index: 0 },
@@ -140,7 +140,7 @@ describe('playground wire requests', () => {
       role: 'assistant',
       content: [{ type: 'output_text', text: 'ok', annotations: [] }],
     };
-    const body = await roundTrip('responses', [
+    const body = await roundTrip('openaiResponses', [
       { type: 'response.output_text.delta', sequence_number: 0, item_id: 'msg_1', output_index: 1, content_index: 0, delta: 'ok' },
       {
         type: 'response.completed',
@@ -162,7 +162,7 @@ describe('playground wire requests', () => {
 
   it('replays Chat Completions reasoning fields without rendering them as text', async () => {
     const reasoningItems = [{ type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_text', text: 'summary' }] }];
-    const body = await roundTrip('chatCompletions', [
+    const body = await roundTrip('openaiChatCompletions', [
       {
         id: 'chat_1', object: 'chat.completion.chunk', created: 1, model: 'test-model',
         choices: [{
@@ -185,14 +185,14 @@ describe('playground wire requests', () => {
       { role: 'user', content: 'hello' },
       {
         role: 'assistant', content: 'ok', reasoning_text: 'hidden thought',
-        reasoning_opaque: 'opaque-reasoning', reasoning_items: reasoningItems,
+        reasoning_opaque: 'opaque-reasoning', reasoning_items: reasoningItems, refusal: null,
       },
       { role: 'user', content: 'again' },
     ]);
   });
 
   it('replays Messages thinking and signature blocks without rendering them as text', async () => {
-    const body = await roundTrip('messages', [
+    const body = await roundTrip('anthropicMessages', [
       {
         type: 'message_start',
         message: {
@@ -217,7 +217,7 @@ describe('playground wire requests', () => {
         role: 'assistant',
         content: [
           { type: 'thinking', thinking: 'hidden thought', signature: 'signed-reasoning' },
-          { type: 'text', text: 'ok' },
+          { type: 'text', text: 'ok', citations: null },
         ],
       },
       { role: 'user', content: 'again' },
@@ -238,7 +238,7 @@ describe('playground wire requests', () => {
     });
 
     await collectWithOutput(streamPlaygroundText({
-      api: 'chatCompletions',
+      api: 'openaiChatCompletions',
       apiKey: 'secret',
       model: 'test-model',
       system: '',
@@ -246,11 +246,11 @@ describe('playground wire requests', () => {
         id: 'assistant-1',
         role: 'assistant',
         text: 'visible answer',
-        assistantOutput: { api: 'responses', items: [{ type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'secret' }] },
+        assistantOutput: { api: 'openaiResponses', items: [{ type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'secret' }] },
       }],
       options: {},
       signal: new AbortController().signal,
-      fetchImpl: createWireFetch({}, 'chatCompletions'),
+      fetchImpl: createWireFetch({}, 'openaiChatCompletions'),
     }));
 
     expect(calls[0]!.messages).toEqual([{ role: 'assistant', content: 'visible answer' }]);

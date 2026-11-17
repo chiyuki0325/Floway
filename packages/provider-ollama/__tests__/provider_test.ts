@@ -1,5 +1,6 @@
 import { test } from 'vitest';
 
+import { CREDIT_BALANCE, USAGE_TOTALS } from './usage-fixture.ts';
 import { createOllamaProvider } from '../src/provider.ts';
 import { initProviderRepo, type UpstreamRecord } from '@floway-dev/provider';
 import { assertEquals, assertExists, jsonResponse, noopAnthropicMessagesUpstreamCallOptions, noopUpstreamCallOptions, testFetcher, withMockedFetch } from '@floway-dev/test-utils';
@@ -7,6 +8,7 @@ import { assertEquals, assertExists, jsonResponse, noopAnthropicMessagesUpstream
 // A cloud upstream writes its usage snapshot after the calls it serves, so the
 // provider needs a repo to write into wherever those calls are exercised.
 initProviderRepo(() => ({
+  recordUpstreamMetric: async () => {},
   upstreams: {
     getById: async () => null,
     saveState: async () => {},
@@ -18,6 +20,7 @@ const buildRecord = (overrides: Partial<UpstreamRecord> = {}): UpstreamRecord =>
   kind: 'ollama',
   name: 'Ollama',
   enabled: true,
+  usageRefreshIntervalMinutes: 0,
   sortOrder: 0,
   createdAt: '2026-06-19T00:00:00.000Z',
   updatedAt: '2026-06-19T00:00:00.000Z',
@@ -72,6 +75,7 @@ test('getProvidedModels surfaces chat models with all three OpenAI/Anthropic-com
     assertEquals(Object.keys(gptoss.endpoints).sort(), ['anthropicMessages', 'openaiChatCompletions', 'openaiCompletions', 'openaiResponses']);
     assertEquals(gptoss.owned_by, 'ollama');
     assertEquals(gptoss.limits.max_context_window_tokens, 131072);
+    assertEquals(gptoss.opaqueBlobCompatibilityScope, { bindToUpstream: true });
     // OLLAMA_MODEL_PRICING covers gpt-oss:120b, so pricing flows through into
     // the ProviderModel on the auto path.
     assertEquals(gptoss.pricing?.entries[0]?.rates.input_tokens, '0.00000015');
@@ -112,6 +116,7 @@ test('getProvidedModels merges manual overrides in front of auto-fetched models 
     assertEquals(models[0].display_name, 'Pinned 120B');
     assertEquals(Object.keys(models[0].endpoints), ['openaiChatCompletions']);
     assertEquals(models[0].chat, { image_detail_original: true });
+    assertEquals(models[0].opaqueBlobCompatibilityScope, { bindToUpstream: true });
     assertEquals(models[0].pricing, { entries: [{ rates: { input_tokens: '99', output_tokens: '99' } }] });
     // No duplicate gpt-oss:120b further down.
     assertEquals(models.filter(m => m.id === 'gpt-oss:120b').length, 1);
@@ -204,7 +209,7 @@ test('call* methods POST to /v1/<endpoint> with the upstream model id and Bearer
       const [providerModel] = await instance.instance.getProvidedModels(testFetcher);
       const result = await instance.instance.callOpenAIChatCompletions(
         providerModel,
-        { messages: [{ role: 'user', content: 'hi' }] },
+        { messages: [{ role: 'user', content: 'hi' }], max_completion_tokens: 32000 },
         undefined,
         noopUpstreamCallOptions(),
       );
@@ -214,9 +219,12 @@ test('call* methods POST to /v1/<endpoint> with the upstream model id and Bearer
 
   assertEquals(chatRequest!.url, 'https://ollama.com/v1/chat/completions');
   assertEquals(chatRequest!.headers.get('Authorization'), 'Bearer ollama_test');
-  const body = chatBody as { model: string; stream: boolean };
+  const body = chatBody as { model: string; stream: boolean; max_tokens?: number; max_completion_tokens?: number };
   assertEquals(body.model, 'gpt-oss:120b');
   assertEquals(body.stream, true);
+  // Ollama reads only `max_tokens` into `num_predict`.
+  assertEquals(body.max_tokens, 32000);
+  assertEquals('max_completion_tokens' in body, false);
 });
 
 test('Anthropic Messages methods serialize typed anthropic-beta metadata only on Anthropic Messages wire calls', async () => {
@@ -236,7 +244,8 @@ test('Anthropic Messages methods serialize typed anthropic-beta metadata only on
       }
       // A cloud call arms the background usage probe. It is not a wire call
       // of the protocol under test, so it stays out of the beta record.
-      if (path === '/api/usage') return jsonResponse({ limits: {} });
+      if (path === '/api/usage') return jsonResponse(USAGE_TOTALS);
+      if (path === '/api/balance') return jsonResponse(CREDIT_BALANCE);
       if (path === '/api/me') return jsonResponse({ Plan: 'free' });
       betas[path] = request.headers.get('anthropic-beta');
       if (path === '/v1/messages') {
