@@ -18,16 +18,16 @@ export function ConcurrencyPanel({
 }) {
   const { t } = useTranslation();
   return <Panel>
-    <h2 className="text-base font-semibold">{t('dashboard.usage.concurrency.title')}</h2>
-    {records === null || records.length === 0 ? <EmptyStateLine>{t('dashboard.usage.concurrency.empty')}</EmptyStateLine> : (
+    <h2 className="text-base font-semibold">{t('monitoring.usage.concurrency.title')}</h2>
+    {records === null || records.length === 0 ? <EmptyStateLine>{t('monitoring.usage.concurrency.empty')}</EmptyStateLine> : (
       <div className="mt-3 overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr className="text-left">
-            <th>{t('dashboard.usage.concurrency.hour')}</th>
-            <th>{t('dashboard.usage.concurrency.upstream')}</th>
-            <th>{t('dashboard.usage.concurrency.limit')}</th>
-            <th>{t('dashboard.usage.concurrency.active')}</th>
-            <th>{t('dashboard.usage.concurrency.queued')}</th>
+            <th>{t('monitoring.usage.concurrency.hour')}</th>
+            <th>{t('monitoring.usage.concurrency.upstream')}</th>
+            <th>{t('monitoring.usage.concurrency.limit')}</th>
+            <th>{t('monitoring.usage.concurrency.active')}</th>
+            <th>{t('monitoring.usage.concurrency.queued')}</th>
           </tr></thead>
           <tbody>{records.map(record => <tr key={`${record.hour}-${record.upstream_id}`}>
             <td>{record.hour}</td>

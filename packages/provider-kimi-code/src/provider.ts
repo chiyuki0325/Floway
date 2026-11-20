@@ -13,7 +13,7 @@ import { headersForAnthropicMessagesCall, jsonRequestBody, resolveEffectiveFlags
 
 const fastModeRequired = (model: ProviderModel, field: 'service_tier' | 'speed') => ({
   ok: false as const,
-  response: Response.json({
+  http: Response.json({
     ...(field === 'speed' ? { type: 'error' } : {}),
     error: { type: 'invalid_request_error', message: `'${model.id}' is only available with fast mode selected; set \`${field}: "${field === 'speed' ? 'fast' : FAST_SERVICE_TIER}"\`.` },
   }, { status: 400 }),
@@ -30,7 +30,7 @@ const selectMessagesModel = (model: ProviderModel, speed: unknown) => {
   if (speed === 'fast' && selection?.lane !== 'fast') {
     return {
       ok: false as const,
-      response: Response.json({ type: 'error', error: { type: 'invalid_request_error', message: `'${model.id}' does not support fast mode; omit \`speed\` or set \`speed: "standard"\`.` } }, { status: 400 }),
+      http: Response.json({ type: 'error', error: { type: 'invalid_request_error', message: `'${model.id}' does not support fast mode; omit \`speed\` or set \`speed: "standard"\`.` } }, { status: 400 }),
       modelKey: model.upstreamModelId,
     };
   }
@@ -41,11 +41,12 @@ export const createKimiCodeProvider = (record: UpstreamRecord): Provider => {
   const { config } = assertKimiCodeUpstreamRecord(record);
   const enabledFlags = resolveEffectiveFlags([KIMI_CODE_DEFAULT_FLAGS, record.flagOverrides]);
 
-  // Forward thinking and effort unchanged. The documented disabled-thinking
-  // reroute from K3 and K2.7 Code Highspeed to K2.8 Preview is invisible in
-  // observed responses: they echo the requested id, so passthrough cannot tell
-  // callers which model ran. Model-scoped restrictions would misrepresent this
-  // request-dependent routing rule as a gateway capability restriction.
+  // Forward thinking and effort unchanged. Observed responses echo the id that
+  // was requested, so neither this layer nor the caller can tell which model
+  // actually served a request the service routed differently; the documented
+  // disabled-thinking behaviour for K3 and K2.7 Code Highspeed makes that a real
+  // possibility rather than a hypothetical. Model-scoped restrictions would
+  // instead present a request-dependent upstream rule as a gateway limit.
   // https://www.kimi.com/code/docs/en/kimi-code/models.html
   const call = async (path: string, modelId: string, body: Record<string, unknown>, signal: AbortSignal | undefined, headers: HttpHeaderLines, opts: UpstreamCallOptions, probes: boolean) => {
     const response = await kimiCodeFetch(config, path,
@@ -88,19 +89,21 @@ export const createKimiCodeProvider = (record: UpstreamRecord): Provider => {
     },
     callAnthropicMessages: async (model, body, signal, opts) => {
       const selection = selectMessagesModel(model, body.speed);
-      if ('response' in selection) return selection;
+      if ('http' in selection) return selection;
       const { modelId } = selection;
       return await streaming('/messages', modelId, kimiCodeMessagesWireBody(body), signal, headersForAnthropicMessagesCall([...opts.headers], opts.anthropicBeta), body.speed === 'fast' || body.speed === 'standard' ? kimiCodeMessagesSpeedParser(body.speed === 'fast' ? 'fast' : 'standard') : parseAnthropicMessagesStream, opts);
     },
     callAnthropicMessagesCountTokens: async (model, body, signal, opts) => {
       const selection = selectMessagesModel(model, body.speed);
-      if ('response' in selection) return selection;
+      if ('http' in selection) return selection;
       return {
-        response: await call('/messages/count_tokens', selection.modelId, kimiCodeMessagesWireBody(body), signal, headersForAnthropicMessagesCall([...opts.headers], opts.anthropicBeta), opts, false),
+        http: await call('/messages/count_tokens', selection.modelId, kimiCodeMessagesWireBody(body), signal, headersForAnthropicMessagesCall([...opts.headers], opts.anthropicBeta), opts, false),
         modelKey: selection.modelId,
       };
     },
     callAlphaSearch: unsupported('callAlphaSearch'),
+    callGeminiGenerateContent: unsupported('callGeminiGenerateContent'),
+    callGeminiGenerateContentCountTokens: unsupported('callGeminiGenerateContentCountTokens'),
     callOpenAICompletions: unsupported('callOpenAICompletions'),
     callOpenAIEmbeddings: unsupported('callOpenAIEmbeddings'),
     callOpenAIImagesGenerations: unsupported('callOpenAIImagesGenerations'),

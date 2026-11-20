@@ -1,6 +1,6 @@
 import type { InferRequestType } from 'hono/client';
 
-import { PATH_OVERRIDE_PATHS } from './endpoints';
+import { PATH_OVERRIDE_OPTIONS } from './endpoints';
 import { api, callApi } from '../../api/client';
 import type {
   ProviderModelsFailureResponse,
@@ -223,12 +223,15 @@ export const valuesFromRecord = (record: UpstreamRecord): UpstreamEditorValues =
         // Seeding the blanks keeps the saved state and the edited state the
         // same shape; configFromValues drops the map again when all of it is
         // blank, and a stored path the form does not list survives the merge.
-        pathOverrides: { ...Object.fromEntries(PATH_OVERRIDE_PATHS.map(path => [path, ''])), ...record.config.pathOverrides },
+        pathOverrides: { ...Object.fromEntries(PATH_OVERRIDE_OPTIONS.map(({ path }) => [path, ''])), ...record.config.pathOverrides },
         ingressHeadersRules: [
           ...structuredClone(record.config.ingressHeadersRules),
           { key: '', value: null },
         ],
-        modelsFetch: withRegisteredKey('endpoint', structuredClone(record.config.modelsFetch)),
+        modelsFetch: {
+          ...withRegisteredKey('endpoint', structuredClone(record.config.modelsFetch)),
+          authStyle: record.config.modelsFetch.authStyle,
+        },
       }
     : record.kind === 'azure' || record.kind === 'ollama' || record.kind === 'kimi-code'
       ? withApiKeyField(record.config)
@@ -260,7 +263,6 @@ const configFromValues = (record: UpstreamRecord, values: UpstreamEditorValues):
   if (manualModelsSupported(record)) config.models = structuredClone(values.manualModels);
   if (record.kind === 'custom') {
     const custom = config as Record<string, unknown>;
-    if (custom.authStyle === 'none') delete custom.apiKey;
     const ingressHeadersRules = custom.ingressHeadersRules as { key: string; value: string | null }[];
     custom.ingressHeadersRules = ingressHeadersRules.flatMap(rule => {
       const key = rule.key.trim().toLowerCase();
